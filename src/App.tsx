@@ -46,6 +46,7 @@ function App() {
   }, [])
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
       mountedRef.current = false
     }
@@ -133,6 +134,11 @@ function App() {
     setScreen('deity')
   }
 
+  function startLuckyFlow() {
+    setActivity('luck')
+    setScreen('deity')
+  }
+
   function selectDeity(nextIndex: number) {
     const nextDeity = deityConfig[nextIndex]
     setDeityIndex(nextIndex)
@@ -204,12 +210,12 @@ function App() {
 
   function goBack() {
     if (screen === 'activity') setScreen('welcome')
-    if (screen === 'deity') setScreen('activity')
+    if (screen === 'deity') setScreen('welcome')
     if (screen === 'incense-idle') setScreen('deity')
     if (screen === 'wish-placeholder') setScreen('deity')
   }
 
-  const screenNumber = screen === 'welcome' ? '01' : screen === 'activity' ? '02' : screen === 'deity' ? '03' : screen === 'wish-placeholder' ? '04' : screen === 'result' ? '05' : '04'
+  const screenNumber = screen === 'welcome' ? '01' : screen === 'activity' || screen === 'deity' ? '02' : screen === 'wish-placeholder' ? '03' : screen === 'result' ? '04' : '03'
   const isRitual = screen === 'incense-idle' || screen === 'incense-burning'
 
   return (
@@ -260,7 +266,7 @@ function App() {
         </header>
 
         <section className="screen-content" key={`${screen}-${deityIndex}`}>
-          {screen === 'welcome' && <WelcomeScreen onContinue={() => setScreen('activity')} />}
+          {screen === 'welcome' && <WelcomeScreen onContinue={startLuckyFlow} />}
           {screen === 'activity' && <ActivityScreen selected={activity} onSelect={selectActivity} />}
           {screen === 'deity' && (
             <DeityScreen
