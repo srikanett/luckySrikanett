@@ -1,0 +1,61 @@
+@font-face {
+  font-family: 'LINESeedSansTH';
+  src: url('./assets/fonts/LINESeedSansTH_A_Rg.ttf') format('truetype');
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+:root {
+  --display-font: 'LINESeedSansTH', 'Noto Sans Thai', system-ui, sans-serif;
+  --body-font: 'LINESeedSansTH', 'Noto Sans Thai', system-ui, sans-serif;
+  font-family: var(--body-font);
+  font-size: 16px;
+  line-height: 1.5;
+  color: #fff1d2;
+  background: #050204;
+  font-synthesis: weight style;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+  background: #050204;
+}
+
+#root {
+  width: 100%;
+  max-width: 1024px;
+  margin: 0 auto;
+}
+
+body {
+  min-height: 100svh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+button:focus-visible {
+  outline: 2px solid #ffe5a2;
+  outline-offset: 4px;
+}

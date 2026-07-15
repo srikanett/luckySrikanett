@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-15T12:10:14Z",
+  "title": "ศรีคเนศ เทวาลัย - immersive blessing product UI",
+  "extensions": {
+    "colorMeta": {
+      "palette": "dark luxury black-gold, red velvet, warm sacred light",
+      "avoid": ["generic AI template", "casino UI", "commerce landing page", "distorted deity imagery"]
+    },
+    "typographyMeta": {
+      "primary": "LINESeedSansTH_A_Rg",
+      "fallback": ["LINESeedSansTH", "Noto Sans Thai", "system-ui", "sans-serif"],
+      "letterSpacing": "normal",
+      "fontDisplay": "swap"
+    },
+    "shadows": {
+      "content": "0 2px 12px rgba(0, 0, 0, 0.5)",
+      "primaryGlow": "0 0 30px rgba(255, 194, 76, 0.28)",
+      "resultGlow": "0 0 62px rgba(255, 178, 52, 0.3)",
+      "modal": "0 24px 80px rgba(0, 0, 0, 0.68)",
+      "neon": "0 0 50px rgba(255, 74, 151, 0.14)"
+    },
+    "motion": {
+      "screenIn": {"duration": "700-1000ms", "easing": "ease-out", "property": "opacity, transform"},
+      "selection": {"duration": "300ms", "easing": "ease-out", "property": "opacity, transform, filter"},
+      "carousel": {"duration": "450-600ms", "easing": "spring-like ease-out", "property": "transform, opacity"},
+      "smokeLift": {"duration": "5.8-8s", "easing": "ease-in-out", "loop": true},
+      "flameFlicker": {"duration": "1.8-1.9s", "easing": "ease-in-out", "loop": true},
+      "ritual": {"duration": "10s", "source": "campaignConfig.ritualDurationMs"},
+      "digitReveal": {"duration": "350-500ms per digit", "easing": "cubic-bezier(0.22, 1, 0.36, 1)"},
+      "reducedMotion": "replace loops with a short fade and remove non-essential particles"
+    },
+    "breakpoints": {"mobile": "<760px", "tablet": "760px", "wide": "1100px"},
+    "narrative": {
+      "northStar": "The Golden Temple Threshold",
+      "voice": "luxurious, reverent, calm",
+      "layout": "full-screen image with light overlay controls",
+      "accessibility": "44px touch targets, readable contrast, keyboard focus, reduced motion",
+      "browserIdentity": "Guest by default; do not persist LINE profile data in browser mode"
+    }
+  },
+  "components": [
+    {"name": "Primary Button", "selector": ".primary-button", "intent": "single dominant ritual action"},
+    {"name": "Selection Button", "selector": ".selection-button", "intent": "activity or deity selection"},
+    {"name": "Deity Carousel", "selector": ".deity-stage", "intent": "swipeable 3D deity choice"},
+    {"name": "Incense Ritual", "selector": ".incense-focus", "intent": "burn, smoke, vertical digit reveal"},
+    {"name": "Result Plaque", "selector": ".result-plaque", "intent": "reveal the generated lucky number"},
+    {"name": "LINE Modal", "selector": ".line-modal", "intent": "optional result delivery"}
+  ]
+}
