@@ -13,6 +13,7 @@
 - [docs/ASSET_HANDOFF.md](docs/ASSET_HANDOFF.md) — asset path, fallback และ video handoff
 - [docs/VIDEO_PROMPTS.md](docs/VIDEO_PROMPTS.md) — prompt สำหรับ image-to-video
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — service boundary, config และ privacy
+- [docs/ADMIN_DASHBOARD.md](docs/ADMIN_DASHBOARD.md) — admin access, Firestore rules และ Beam donation handoff
 
 ## Commands
 

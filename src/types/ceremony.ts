@@ -21,6 +21,9 @@ export interface ActivityRecord {
   id: string
   userId: string
   sessionId: string
+  userDisplayName?: string
+  userPictureUrl?: string
+  userMode: 'guest' | 'line'
   deity: DeityId
   activity: ActivityKind
   type: 'lucky_incense' | 'wish_placeholder'
@@ -29,4 +32,19 @@ export interface ActivityRecord {
   createdAt: string
   lineMessageSent: boolean
   lineLiftSynced: boolean
+}
+
+export type DonationStatus = 'pending' | 'paid' | 'failed' | 'expired' | 'refunded'
+
+export interface DonationRecord {
+  id: string
+  userId: string
+  activityId?: string
+  provider: 'beam'
+  amount: number
+  currency: 'THB'
+  status: DonationStatus
+  paymentReference?: string
+  createdAt: string
+  paidAt?: string
 }

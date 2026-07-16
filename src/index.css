@@ -9,11 +9,30 @@
 :root {
   --display-font: 'LINESeedSansTH', 'Noto Sans Thai', system-ui, sans-serif;
   --body-font: 'LINESeedSansTH', 'Noto Sans Thai', system-ui, sans-serif;
+  --ink: #050204;
+  --ink-soft: #0b0305;
+  --wine: #31050b;
+  --wine-deep: #18050a;
+  --gold-deep: #7d531b;
+  --gold: #d8a84d;
+  --gold-light: #f9d989;
+  --sacred-light: #fff5dd;
+  --body-light: #fff1d2;
+  --fire: #f4ad43;
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+  --radius-card: 16px;
+  --radius-pill: 999px;
+  --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --content-shadow: 0 3px 14px rgba(0, 0, 0, 0.76);
   font-family: var(--body-font);
   font-size: 16px;
   line-height: 1.5;
-  color: #fff1d2;
-  background: #050204;
+  color: var(--body-light);
+  background: var(--ink);
   font-synthesis: weight style;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -30,12 +49,19 @@ body,
   min-width: 320px;
   min-height: 100%;
   margin: 0;
-  background: #050204;
+  background: var(--ink);
+}
+
+html,
+body {
+  overflow: hidden;
+  touch-action: pan-x pan-y;
+  overscroll-behavior: none;
 }
 
 #root {
-  width: 100%;
-  max-width: 1024px;
+  width: min(100%, 600px);
+  min-height: 100svh;
   margin: 0 auto;
 }
 
@@ -56,6 +82,14 @@ button {
 }
 
 button:focus-visible {
-  outline: 2px solid #ffe5a2;
-  outline-offset: 4px;
+  outline: 2px solid var(--gold-light);
+  outline-offset: 3px;
+}
+
+.app-loading {
+  display: grid;
+  min-height: 100svh;
+  place-items: center;
+  color: var(--body-light);
+  background: var(--ink);
 }

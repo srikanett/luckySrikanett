@@ -6,9 +6,9 @@ async function saveActivityMock(record: ActivityRecord) {
   if (import.meta.env.DEV) console.info('[mock-activity] saved', record)
 }
 
-export async function saveActivityRecord(record: ActivityRecord) {
+export async function saveActivityRecord(record: ActivityRecord, lineAccessToken?: string) {
   if (getFirebaseEnvironment()) {
-    const saved = await saveActivityToFirebase(record)
+    const saved = await saveActivityToFirebase(record, lineAccessToken)
     if (saved) return
   }
   await saveActivityMock(record)

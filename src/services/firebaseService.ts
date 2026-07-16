@@ -22,9 +22,36 @@ export function getFirebaseEnvironment(): FirebaseEnvironment | null {
   return Object.values(environment).every(Boolean) ? environment : null
 }
 
-/** Firebase SDK/Firestore write boundary. Keep this function as the only future integration point. */
-export async function saveActivityToFirebase(record: ActivityRecord) {
+interface RecordLuckyActivityResponse {
+  activityId: string
+}
+
+/** Sends a completed ritual to the callable backend. LINE tokens never enter Firestore. */
+export async function saveActivityToFirebase(record: ActivityRecord, lineAccessToken?: string) {
   if (!getFirebaseEnvironment()) return false
-  console.info('[firebase-ready] Connect Firestore adapter before enabling production writes.', record.id)
-  return false
+
+  const environment = getFirebaseEnvironment()
+  if (!environment) return false
+
+  const [{ getApp, getApps, initializeApp }, { getFunctions, httpsCallable }] = await Promise.all([
+    import('firebase/app'),
+    import('firebase/functions'),
+  ])
+  const app = getApps().length ? getApp() : initializeApp(environment)
+  const functions = getFunctions(app, 'asia-southeast1')
+  const recordActivity = httpsCallable<
+    Pick<ActivityRecord, 'sessionId' | 'deity' | 'activity' | 'type' | 'result' | 'digitLength'> & { lineAccessToken?: string },
+    RecordLuckyActivityResponse
+  >(functions, 'recordLuckyActivity')
+
+  await recordActivity({
+    sessionId: record.sessionId,
+    deity: record.deity,
+    activity: record.activity,
+    type: record.type,
+    result: record.result,
+    digitLength: record.digitLength,
+    ...(lineAccessToken ? { lineAccessToken } : {}),
+  })
+  return true
 }

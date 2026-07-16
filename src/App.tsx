@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import './App.css'
 import { assetConfig, deityConfig } from './config/assetConfig'
 import { brandConfig, campaignConfig } from './config/brandConfig'
@@ -10,13 +10,51 @@ import type { LiffSession } from './services/liffService'
 import { getSessionId } from './utils/session'
 import type { ActivityKind, AppScreen, DeityId, LuckyResult } from './types/ceremony'
 
-const particles = Array.from({ length: 18 }, (_, index) => ({
+const particles = Array.from({ length: 10 }, (_, index) => ({
   id: index,
   left: `${(index * 37 + 11) % 96}%`,
   top: `${(index * 61 + 7) % 88}%`,
   delay: `${(index % 7) * -0.8}s`,
   duration: `${7 + (index % 5)}s`,
 }))
+
+type NetworkConnection = EventTarget & {
+  saveData?: boolean
+}
+
+function getNetworkConnection() {
+  if (typeof navigator === 'undefined') return undefined
+  return (navigator as Navigator & { connection?: NetworkConnection }).connection
+}
+
+function getPowerSavingPreference() {
+  if (typeof window === 'undefined') return false
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches || getNetworkConnection()?.saveData === true
+}
+
+function useRuntimePreferences() {
+  const [isPageVisible, setIsPageVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden')
+  const [isPowerSaving, setIsPowerSaving] = useState(getPowerSavingPreference)
+
+  useEffect(() => {
+    const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const connection = getNetworkConnection()
+    const updatePreferences = () => setIsPowerSaving(getPowerSavingPreference())
+    const updateVisibility = () => setIsPageVisible(document.visibilityState !== 'hidden')
+
+    motionQuery.addEventListener('change', updatePreferences)
+    connection?.addEventListener('change', updatePreferences)
+    document.addEventListener('visibilitychange', updateVisibility)
+
+    return () => {
+      motionQuery.removeEventListener('change', updatePreferences)
+      connection?.removeEventListener('change', updatePreferences)
+      document.removeEventListener('visibilitychange', updateVisibility)
+    }
+  }, [])
+
+  return { isPageVisible, isPowerSaving }
+}
 
 function App() {
   const [screen, setScreen] = useState<AppScreen>('welcome')
@@ -33,11 +71,14 @@ function App() {
   const [saved, setSaved] = useState(false)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [toast, setToast] = useState('')
+  const [shouldLoadWelcomeVideo, setShouldLoadWelcomeVideo] = useState(false)
   const resultPromiseRef = useRef<Promise<LuckyResult> | null>(null)
   const revealRequestedRef = useRef(false)
   const completionRequestedRef = useRef(false)
+  const ritualElapsedRef = useRef(0)
   const mountedRef = useRef(true)
   const sessionId = useMemo(() => getSessionId(), [])
+  const { isPageVisible, isPowerSaving } = useRuntimePreferences()
 
   useEffect(() => {
     void initializeLiff().then((session) => {
@@ -52,28 +93,45 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (screen !== 'welcome' || isPowerSaving || !isPageVisible) {
+      setShouldLoadWelcomeVideo(false)
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => setShouldLoadWelcomeVideo(true), 450)
+    return () => window.clearTimeout(timeoutId)
+  }, [isPageVisible, isPowerSaving, screen])
+
+  useEffect(() => {
+    if (!toast) return
+    const timeoutId = window.setTimeout(() => setToast(''), 3200)
+    return () => window.clearTimeout(timeoutId)
+  }, [toast])
+
   const completeRitual = useCallback(async () => {
     try {
       const resultPromise = resultPromiseRef.current ?? generateLuckyResult(campaignConfig)
       const nextResult = await resultPromise
 
-      try {
-        await saveActivityRecord({
-          id: `${sessionId}-${Date.now()}`,
-          userId: lineSession.profile?.userId ?? sessionId,
-          sessionId,
-          deity: selectedDeity,
-          activity: 'luck',
-          type: 'lucky_incense',
-          result: nextResult.digits.join(''),
-          digitLength: nextResult.digits.length,
-          createdAt: new Date().toISOString(),
-          lineMessageSent: false,
-          lineLiftSynced: false,
-        })
-      } catch {
+      void saveActivityRecord({
+        id: `${sessionId}-${Date.now()}`,
+        userId: lineSession.profile?.userId ?? sessionId,
+        sessionId,
+        userDisplayName: lineSession.profile?.displayName,
+        userPictureUrl: lineSession.profile?.pictureUrl,
+        userMode: lineSession.mode,
+        deity: selectedDeity,
+        activity: 'luck',
+        type: 'lucky_incense',
+        result: nextResult.digits.join(''),
+        digitLength: nextResult.digits.length,
+        createdAt: new Date().toISOString(),
+        lineMessageSent: false,
+        lineLiftSynced: false,
+      }, lineSession.accessToken).catch(() => {
         if (import.meta.env.DEV) console.warn('[activity] could not save history')
-      }
+      })
 
       if (mountedRef.current) {
         setResult(nextResult)
@@ -85,20 +143,28 @@ function App() {
         setToast('ลองเริ่มพิธีอีกครั้ง')
       }
     }
-  }, [lineSession.profile?.userId, selectedDeity, sessionId])
+  }, [lineSession.accessToken, lineSession.mode, lineSession.profile?.displayName, lineSession.profile?.pictureUrl, lineSession.profile?.userId, selectedDeity, sessionId])
 
   useEffect(() => {
-    if (screen !== 'incense-burning') return
+    if (screen !== 'incense-burning' || !isPageVisible) return
 
-    const startedAt = performance.now()
+    const startedAt = performance.now() - ritualElapsedRef.current
     let animationFrame = 0
+    let lastProgressUpdate = 0
+    let lastDigitCount = -1
 
     const tick = (now: number) => {
       const progress = Math.min(1, (now - startedAt) / campaignConfig.ritualDurationMs)
-      setBurningProgress(progress)
+      if (now - lastProgressUpdate >= 100 || progress >= 1) {
+        lastProgressUpdate = now
+        setBurningProgress(progress)
+      }
 
       const nextDigitCount = progress < 0.42 ? 0 : progress < 0.62 ? 1 : progress < 0.82 ? 2 : 3
-      setRevealedDigitCount(nextDigitCount)
+      if (nextDigitCount !== lastDigitCount) {
+        lastDigitCount = nextDigitCount
+        setRevealedDigitCount(nextDigitCount)
+      }
 
       if (progress >= 0.35 && !revealRequestedRef.current && resultPromiseRef.current) {
         revealRequestedRef.current = true
@@ -107,9 +173,11 @@ function App() {
         })
       }
 
-      if (progress >= 1 && !completionRequestedRef.current) {
-        completionRequestedRef.current = true
-        void completeRitual()
+      if (progress >= 1) {
+        if (!completionRequestedRef.current) {
+          completionRequestedRef.current = true
+          void completeRitual()
+        }
         return
       }
 
@@ -117,8 +185,11 @@ function App() {
     }
 
     animationFrame = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(animationFrame)
-  }, [completeRitual, screen])
+    return () => {
+      ritualElapsedRef.current = Math.min(campaignConfig.ritualDurationMs, performance.now() - startedAt)
+      window.cancelAnimationFrame(animationFrame)
+    }
+  }, [completeRitual, isPageVisible, screen])
 
   const currentAsset = screen === 'welcome' ? assetConfig.welcome :
     screen === 'activity' || screen === 'wish-placeholder' || screen === 'deity'
@@ -128,6 +199,10 @@ function App() {
   const incenseDigits = burningDigits
     ? burningDigits.map((digit, index) => index < revealedDigitCount ? digit : '?')
     : ['?', '?', '?']
+  const isVideoAllowed = isPageVisible && !isPowerSaving
+  const showWelcomeVideo = screen === 'welcome' && shouldLoadWelcomeVideo && isVideoAllowed
+  const showIncenseVideo = screen === 'incense-burning' && isVideoAllowed
+  const activeParticles = particles.slice(0, isPowerSaving ? 3 : 6)
 
   function selectActivity(nextActivity: ActivityKind) {
     setActivity(nextActivity)
@@ -162,6 +237,7 @@ function App() {
     setRevealedDigitCount(0)
     setSaved(false)
     setToast('')
+    ritualElapsedRef.current = 0
     revealRequestedRef.current = false
     completionRequestedRef.current = false
     resultPromiseRef.current = generateLuckyResult(campaignConfig)
@@ -173,6 +249,7 @@ function App() {
     setBurningProgress(0)
     setBurningDigits(null)
     setRevealedDigitCount(0)
+    ritualElapsedRef.current = 0
     revealRequestedRef.current = false
     completionRequestedRef.current = false
     resultPromiseRef.current = generateLuckyResult(campaignConfig)
@@ -205,6 +282,7 @@ function App() {
     setLineStatus('idle')
     setSaved(false)
     setToast('')
+    ritualElapsedRef.current = 0
     setScreen('welcome')
   }
 
@@ -219,16 +297,15 @@ function App() {
   const isRitual = screen === 'incense-idle' || screen === 'incense-burning'
 
   return (
-    <main className={`app-shell scene-${screen} mode-${lineSession.mode}`}>
+    <main className={`app-shell scene-${screen} mode-${lineSession.mode} ${isPowerSaving ? 'is-power-saving' : ''} ${isPageVisible ? '' : 'is-page-hidden'}`}>
       <div className="scene-stage">
         <ImageLayer src={currentAsset} alt="บรรยากาศศรีคเนศ เทวาลัย" />
-        {screen === 'welcome' && <VideoLayer src={assetConfig.welcomeVideo} poster={assetConfig.welcome} loop />}
-        {screen === 'incense-burning' && <VideoLayer src={assetConfig.luckyIncenseBurningVideo} poster={assetConfig.luckyIncense} />}
+        {showWelcomeVideo && <VideoLayer src={assetConfig.welcomeVideo} poster={assetConfig.welcome} loop />}
+        {showIncenseVideo && <VideoLayer src={assetConfig.luckyIncenseBurningVideo} poster={assetConfig.luckyIncense} />}
         <div className="scene-vignette" />
         <div className="scene-wash" />
-        <div className="sacred-grid" />
         <div className="particle-field" aria-hidden="true">
-          {particles.map((particle) => (
+          {activeParticles.map((particle) => (
             <span
               className="particle"
               key={particle.id}
@@ -265,7 +342,7 @@ function App() {
           </button>
         </header>
 
-        <section className="screen-content" key={`${screen}-${deityIndex}`}>
+        <section className="screen-content" key={screen}>
           {screen === 'welcome' && <WelcomeScreen onContinue={startLuckyFlow} />}
           {screen === 'activity' && <ActivityScreen selected={activity} onSelect={selectActivity} />}
           {screen === 'deity' && (
@@ -274,6 +351,7 @@ function App() {
               onMove={moveDeity}
               onSelect={selectDeity}
               onContinue={beginCeremony}
+              playVideo={isVideoAllowed}
             />
           )}
           {isRitual && (
@@ -299,7 +377,7 @@ function App() {
 
         {isRitual && screen === 'incense-burning' && (
           <div className="ritual-progress" aria-label={`ความคืบหน้าการจุดธูป ${Math.round(burningProgress * 100)} เปอร์เซ็นต์`}>
-            <span style={{ width: `${burningProgress * 100}%` }} />
+            <span style={{ transform: `scaleX(${burningProgress})` }} />
           </div>
         )}
       </div>
@@ -313,22 +391,51 @@ function App() {
 }
 
 function ImageLayer({ src, alt }: { src: string; alt: string }) {
-  return <img className="scene-image" src={src} alt={alt} onError={(event) => { event.currentTarget.style.opacity = '0' }} />
+  return <img className="scene-image" src={src} alt={alt} decoding="async" fetchPriority="high" onError={(event) => { event.currentTarget.style.opacity = '0' }} />
 }
 
 function VideoLayer({ src, poster, loop = false }: { src: string; poster: string; loop?: boolean }) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    // Safari sometimes ignores autoplay for a video inserted after the first render.
+    // Reinforce the muted inline state, then retry when enough media data is available.
+    const startPlayback = () => {
+      video.muted = true
+      video.defaultMuted = true
+      video.volume = 0
+      void video.play().catch(() => undefined)
+    }
+
+    setIsPlaying(false)
+    startPlayback()
+    video.addEventListener('loadeddata', startPlayback)
+    video.addEventListener('canplay', startPlayback)
+
+    return () => {
+      video.removeEventListener('loadeddata', startPlayback)
+      video.removeEventListener('canplay', startPlayback)
+    }
+  }, [src])
+
   return (
     <video
       autoPlay
-      className="scene-video"
+      className={`scene-video ${isPlaying ? 'is-playing' : 'is-pending'}`}
+      disablePictureInPicture
       loop={loop}
       muted
+      onPlaying={() => setIsPlaying(true)}
       playsInline
       poster={poster}
-      preload="auto"
+      preload="metadata"
+      ref={videoRef}
       src={src}
       aria-hidden="true"
-      onError={(event) => { event.currentTarget.style.opacity = '0' }}
     />
   )
 }
@@ -337,7 +444,7 @@ function WelcomeScreen({ onContinue }: { onContinue: () => void }) {
   return (
     <div className="screen-copy intro-copy">
       <p className="eyebrow">เสี่ยงโชค</p>
-      <h1>ศรีคเนศ<br />เทวาลัย</h1>
+      <h1>ศรีคเนศ เทวาลัย</h1>
       <p className="copy-note">ตั้งจิต แล้วเริ่มการขอโชค</p>
       <button className="primary-button" onClick={onContinue} type="button">เริ่มการขอโชค</button>
     </div>
@@ -356,23 +463,61 @@ function ActivityScreen({ selected, onSelect }: { selected: ActivityKind | null;
   )
 }
 
-function DeityScreen({ activeIndex, onMove, onSelect, onContinue }: { activeIndex: number; onMove: (direction: -1 | 1) => void; onSelect: (index: number) => void; onContinue: () => void }) {
+function DeityScreen({ activeIndex, onMove, onSelect, onContinue, playVideo }: { activeIndex: number; onMove: (direction: -1 | 1) => void; onSelect: (index: number) => void; onContinue: () => void; playVideo: boolean }) {
   const pointerStart = useRef<number | null>(null)
+  const didDrag = useRef(false)
+  const [dragOffset, setDragOffset] = useState(0)
 
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     pointerStart.current = event.clientX
+    didDrag.current = false
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (pointerStart.current === null) return
+    const distance = Math.max(-96, Math.min(96, event.clientX - pointerStart.current))
+    if (Math.abs(distance) > 8) didDrag.current = true
+    setDragOffset(distance)
   }
 
   function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
     if (pointerStart.current === null) return
     const distance = event.clientX - pointerStart.current
     pointerStart.current = null
+    setDragOffset(0)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
     if (Math.abs(distance) > 34) onMove(distance < 0 ? 1 : -1)
   }
 
+  function handlePointerCancel() {
+    pointerStart.current = null
+    setDragOffset(0)
+  }
+
+  function handleCardClick(index: number) {
+    if (didDrag.current) {
+      didDrag.current = false
+      return
+    }
+    onSelect(index)
+  }
+
+  const dragStyle = {
+    '--drag-offset': `${dragOffset}px`,
+    '--side-pull': `${dragOffset * 0.45}px`,
+  } as CSSProperties
+
   return (
     <div className="deity-layout">
-      <div className="deity-stage" onPointerDown={handlePointerDown} onPointerUp={handlePointerUp} onPointerCancel={() => { pointerStart.current = null }}>
+      <div
+        className={`deity-stage ${dragOffset !== 0 ? 'is-dragging' : ''}`}
+        onPointerCancel={handlePointerCancel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        style={dragStyle}
+      >
         <button className="carousel-arrow carousel-arrow-left" aria-label="องค์ก่อนหน้า" onClick={() => onMove(-1)} type="button">‹</button>
         {deityConfig.map((deity, index) => {
           const position = index === activeIndex ? 'is-center' : index === (activeIndex + 1) % deityConfig.length ? 'is-right' : 'is-left'
@@ -382,10 +527,24 @@ function DeityScreen({ activeIndex, onMove, onSelect, onContinue }: { activeInde
               aria-pressed={index === activeIndex}
               className={`deity-card ${position}`}
               key={deity.id}
-              onClick={() => onSelect(index)}
+              onClick={() => handleCardClick(index)}
               type="button"
             >
-              <img src={deity.image} alt={deity.label} />
+              {playVideo && index === activeIndex && deity.video ? (
+                <video
+                  aria-hidden="true"
+                  autoPlay
+                  className="deity-card-media"
+                  loop
+                  muted
+                  playsInline
+                  poster={deity.image}
+                  preload="metadata"
+                  src={deity.video}
+                />
+              ) : (
+                <img className="deity-card-media" src={deity.image} alt={deity.label} decoding="async" />
+              )}
               <span>{deity.label}</span>
             </button>
           )
@@ -428,7 +587,7 @@ function WishPlaceholder({ onReset }: { onReset: () => void }) {
   return (
     <div className="screen-copy wish-copy">
       <p className="eyebrow">คำอวยพรประจำวัน</p>
-      <h1>ขอให้พร<br />เปิดทาง</h1>
+      <h1>ขอให้พร เปิดทาง</h1>
       <p className="copy-note">หน้าผลลัพธ์สำหรับกิจกรรมขอพรจะเชื่อมต่อในขั้นถัดไป</p>
       <button className="primary-button" onClick={onReset} type="button">เริ่มใหม่</button>
     </div>
@@ -456,11 +615,21 @@ function ResultScreen({ result, saved, saving, onSave, onLine, onReset }: { resu
 }
 
 function LineModal({ status, mode, onClose, onRetry }: { status: 'pending' | 'success' | 'error'; mode: 'guest' | 'line'; onClose: () => void; onRetry: () => void }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
   const content = status === 'pending'
     ? { title: 'กำลังเชื่อมต่อ LINE', body: 'กำลังเตรียมส่งคำอวยพรของคุณ...' }
     : status === 'success'
       ? { title: 'ส่งคำอวยพรแล้ว', body: 'ผลของคุณถูกส่งกลับไปที่ LINE แล้ว' }
       : { title: 'ยังเชื่อมต่อ LINE ไม่สำเร็จ', body: mode === 'guest' ? 'คุณกำลังใช้งานแบบ Guest ผลยังอยู่บนหน้านี้' : 'ลองเชื่อมต่ออีกครั้งได้เลย' }
+
+  useEffect(() => {
+    closeButtonRef.current?.focus()
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && status !== 'pending') onClose()
+    }
+    window.addEventListener('keydown', closeWithEscape)
+    return () => window.removeEventListener('keydown', closeWithEscape)
+  }, [onClose, status])
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -472,7 +641,7 @@ function LineModal({ status, mode, onClose, onRetry }: { status: 'pending' | 'su
         {status === 'pending' && <div className="modal-loader" aria-hidden="true" />}
         <div className="modal-actions">
           {status === 'error' && <button className="primary-button" onClick={onRetry} type="button">ลองใหม่</button>}
-          <button className="text-button" disabled={status === 'pending'} onClick={onClose} type="button">{status === 'success' ? 'ปิด' : 'ใช้งานต่อแบบ Guest'}</button>
+          <button className="text-button" disabled={status === 'pending'} onClick={onClose} ref={closeButtonRef} type="button">{status === 'success' ? 'ปิด' : 'ใช้งานต่อแบบ Guest'}</button>
         </div>
       </section>
     </div>

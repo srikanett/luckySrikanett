@@ -19,9 +19,9 @@ src/
 
 - `assetConfig`: เป็น source of truth ของภาพที่ใช้ใน flow
 - `brandConfig`: เป็น source of truth ของชื่อแบรนด์และ campaign
-- `activityService`: บันทึก activity; implementation จริงควรสลับจาก mock เป็น backend ได้
+- `activityService`: ส่งผลพิธีที่เสร็จแล้วไปยัง Cloud Function `recordLuckyActivity`; หากเปิดจาก LINE Function จะตรวจชื่อและรูปผ่าน LINE Profile API ก่อนบันทึก
 - `resultGeneratorService`: สร้างเลขตาม campaign config; ต้องไม่ผูกกับ UI
-- `liffService`: ตรวจโหมด Guest/LINE และส่งผลเฉพาะเมื่อ LINE พร้อม
+- `liffService`: ใช้ LINE LIFF SDK ทางการ ตรวจโหมด Guest/LINE และส่งผลเฉพาะเมื่อ LINE พร้อม
 - `utils/session`: สร้าง session id สำหรับ Guest โดยไม่เก็บ LINE identity
 
 ## Configuration
@@ -38,7 +38,8 @@ src/
 
 - Guest result ต้องแสดงได้โดยไม่ต้องมี account
 - Browser ไม่เก็บ LINE profile, token หรือ identifier ลง local storage
-- ส่งข้อมูล LINE ผ่าน LIFF runtime เท่านั้น และต้องมี explicit user action
+- LINE access token ใช้เฉพาะระหว่าง Cloud Function ตรวจ LINE Profile API และห้ามบันทึกลง Firestore หรือ log
+- Guest ยังทำพิธีได้ โดย dashboard จะแสดงเป็น `ผู้เยี่ยมชม` แทนชื่อ LINE
 - Firebase record ควรใช้ session id/approved user id เท่าที่จำเป็น และไม่เก็บข้อมูลส่วนเกิน
 
 ## Error contract
