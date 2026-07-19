@@ -23,6 +23,28 @@ export interface AdminDashboardData {
   }
 }
 
+export type BeamApiValue = string | number | boolean | null | BeamApiValue[] | { [key: string]: BeamApiValue }
+
+export interface AdminBeamCharge {
+  id: string
+  status: string
+  amount: number
+  currency: string
+  referenceId: string
+  paymentMethodType: string
+  chargeSource: string
+  failureCode: string
+  createdAt: string
+  updatedAt: string
+  raw: { [key: string]: BeamApiValue }
+}
+
+export interface AdminBeamChargeHistory {
+  charges: AdminBeamCharge[]
+  metadata: BeamApiValue
+  fetchedAt: string
+}
+
 interface AdminFirebase {
   functions: Functions
 }
@@ -72,16 +94,73 @@ function toNumber(value: unknown, fallback = 0) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
-function toErrorMessage(error: unknown) {
+function toErrorMessage(error: unknown, fallback = 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่') {
   const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : ''
   const message = typeof error === 'object' && error && 'message' in error ? String(error.message) : ''
 
   if (code.includes('permission-denied')) return 'รหัสผ่านไม่ถูกต้อง'
   if (code.includes('unauthenticated')) return 'เซสชันแอดมินหมดอายุ กรุณาเข้าสู่ระบบใหม่'
   if (code.includes('resource-exhausted')) return message.replace(/^.*?:\s*/, '') || 'ลองรหัสเกินจำนวนที่กำหนด กรุณารอสักครู่'
-  if (code.includes('not-found') || code.includes('unavailable')) return 'ระบบตรวจรหัสยังไม่พร้อม กรุณาตรวจสอบว่าเผยแพร่ Cloud Functions แล้ว'
+  if (code.includes('not-found')) return 'ระบบที่เรียกใช้ยังไม่พร้อม กรุณาตรวจสอบว่าเผยแพร่ Cloud Functions แล้ว'
+  if (code.includes('unavailable')) return message.replace(/^.*?:\s*/, '') || fallback
   if (code.includes('failed-precondition')) return message.replace(/^.*?:\s*/, '') || 'ยังไม่ได้ตั้งค่าระบบแอดมินบน Firebase'
-  return 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่'
+  if (code.includes('data-loss')) return message.replace(/^.*?:\s*/, '') || 'ข้อมูลที่ได้รับไม่สมบูรณ์ กรุณาลองใหม่'
+  return message.replace(/^.*?:\s*/, '') || fallback
+}
+
+function toBeamApiValue(value: unknown, depth = 0): BeamApiValue {
+  if (depth > 10) return '[ละเว้นข้อมูลที่ซ้อนลึกเกินไป]'
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
+  if (Array.isArray(value)) return value.map((item) => toBeamApiValue(item, depth + 1))
+  if (typeof value !== 'object') return String(value)
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toBeamApiValue(item, depth + 1)]))
+}
+
+function toBeamRecord(value: unknown): { [key: string]: BeamApiValue } {
+  const converted = toBeamApiValue(value)
+  return converted && typeof converted === 'object' && !Array.isArray(converted) ? converted : {}
+}
+
+function firstBeamString(record: { [key: string]: BeamApiValue }, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function firstBeamNumber(record: { [key: string]: BeamApiValue }, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  }
+  return 0
+}
+
+function nestedBeamString(record: { [key: string]: BeamApiValue }, parentKey: string, keys: string[]) {
+  const parent = record[parentKey]
+  if (!parent || typeof parent !== 'object' || Array.isArray(parent)) return ''
+  return firstBeamString(parent, keys)
+}
+
+function toAdminBeamCharge(value: unknown, index: number): AdminBeamCharge {
+  const raw = toBeamRecord(value)
+  const id = firstBeamString(raw, ['chargeId', 'id']) || `beam-charge-${index + 1}`
+  return {
+    id,
+    status: firstBeamString(raw, ['status', 'chargeStatus']) || 'UNKNOWN',
+    amount: firstBeamNumber(raw, ['amount']),
+    currency: firstBeamString(raw, ['currency']) || 'THB',
+    referenceId: firstBeamString(raw, ['referenceId', 'merchantReferenceId']),
+    paymentMethodType: firstBeamString(raw, ['paymentMethodType']) || nestedBeamString(raw, 'paymentMethod', ['paymentMethodType', 'type']),
+    chargeSource: firstBeamString(raw, ['chargeSource', 'source']) || nestedBeamString(raw, 'chargeSource', ['type', 'sourceType']),
+    failureCode: firstBeamString(raw, ['failureCode', 'errorCode']),
+    createdAt: firstBeamString(raw, ['createdAt', 'created', 'createdTime']),
+    updatedAt: firstBeamString(raw, ['updatedAt', 'updated', 'updatedTime']),
+    raw,
+  }
 }
 
 function toDeity(value: unknown): DeityId {
@@ -216,6 +295,32 @@ export async function signOutAdmin() {
     await revokeSession({ sessionToken: adminSession.token })
   } finally {
     adminSession = undefined
+  }
+}
+
+export async function getAdminBeamChargeHistory(): Promise<AdminBeamChargeHistory> {
+  if (!adminSession || adminSession.expiresAt <= Date.now()) {
+    throw new Error('เซสชันแอดมินหมดอายุ กรุณาเข้าสู่ระบบใหม่')
+  }
+
+  try {
+    const [{ functions }, { httpsCallable }] = await Promise.all([getAdminFirebase(), import('firebase/functions')])
+    const getBeamCharges = httpsCallable<
+      { sessionToken: string },
+      { charges?: unknown[]; metadata?: unknown; fetchedAt?: unknown }
+    >(functions, 'getAdminBeamCharges')
+    const response = await getBeamCharges({ sessionToken: adminSession.token })
+    const charges = Array.isArray(response.data.charges)
+      ? response.data.charges.map(toAdminBeamCharge)
+      : []
+
+    return {
+      charges,
+      metadata: toBeamApiValue(response.data.metadata ?? {}),
+      fetchedAt: toString(response.data.fetchedAt, new Date().toISOString()),
+    }
+  } catch (error) {
+    throw new Error(toErrorMessage(error, 'โหลดประวัติการชำระ Beam ไม่สำเร็จ กรุณาลองใหม่'))
   }
 }
 

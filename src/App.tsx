@@ -872,19 +872,19 @@ function DonationModal({ choice, draw, error, paymentState, onChooseDonation, on
   return (
     <div className="modal-backdrop donation-backdrop" role="presentation">
       <section className="donation-modal" role="dialog" aria-modal="true" aria-labelledby="donation-title">
-        <p className="eyebrow">เปิดเลขเสี่ยงดวงที่เหลือ</p>
-        <h2 id="donation-title" ref={titleRef} tabIndex={-1}>รับเลขมงคลครบ 2 ชุด</h2>
-        <p className="donation-copy">หากต้องการเห็นเลขที่เหลือ สนับสนุน {draw.amount.toLocaleString('th-TH')} บาท เพื่อช่วยดูแล ปรับปรุงระบบ และดูแลส่วนเทวาลัย คุณจะได้รับเลข 3 ตัวและเลข 2 ตัวอีกหนึ่งชุด หากไม่สนับสนุนจะได้รับเลขเพียง 2 หลัก</p>
+        <p className="eyebrow donation-eyebrow">รับเลขมงคลครบ 2 ชุด</p>
+        <h2 className="donation-title-shimmer" id="donation-title" ref={titleRef} tabIndex={-1}>เลือกชุดเลขมงคลของคุณ</h2>
+        <p className="donation-copy">เลือกรับเลข 3 ตัวและเลข 2 ตัว พร้อมชำระค่าบริการ <strong>{draw.amount.toLocaleString('th-TH')} บาท</strong> โดยค่าบริการส่วนนี้นำไปใช้ดูแลระบบและพื้นที่เทวาลัย<span>หรือเลือกรับเลข 2 ตัวโดยไม่มีค่าใช้จ่าย</span></p>
 
         <fieldset className="donation-options">
-          <legend>เลือกวิธีรับเลข</legend>
+          <legend>เลือกรูปแบบการรับเลข</legend>
           <label className={`donation-option donation-option-paid${choice === 'donate' ? ' is-selected' : ''}`}>
             <input checked={choice === 'donate'} disabled={paymentState === 'loading'} name="donation-choice" onChange={onChooseDonation} type="radio" value="donate" />
-            <span><strong>สนับสนุนเพื่อรับเลขที่เหลือ</strong><small>ชำระผ่าน QR PromptPay {draw.amount.toLocaleString('th-TH')} บาท</small></span>
+            <span><strong>รับเลขครบ 2 ชุด — {draw.amount.toLocaleString('th-TH')} บาท</strong><small>รับเลข 3 ตัว และเลข 2 ตัว</small></span>
           </label>
           <label className={`donation-option donation-option-free${choice === 'free' ? ' is-selected' : ''}`}>
             <input checked={choice === 'free'} disabled={paymentState === 'loading'} name="donation-choice" onChange={onChooseFree} type="radio" value="free" />
-            <span><strong>ไม่สนับสนุน รับเลขสองหลัก</strong><small>เปิดเลขจางให้ชัดและจบพิธี</small></span>
+            <span><strong>รับเลข 2 ตัวฟรี</strong><small>ไม่มีค่าใช้จ่าย</small></span>
           </label>
         </fieldset>
 
@@ -906,7 +906,7 @@ function DonationModal({ choice, draw, error, paymentState, onChooseDonation, on
           </div>
         )}
 
-        {choice === 'free' && <button className="primary-button free-result-button" disabled={paymentState === 'loading'} onClick={onConfirmFree} type="button">{paymentState === 'loading' ? 'กำลังเปิดเลข...' : 'ยืนยันรับเลข 2 หลัก'}</button>}
+        {choice === 'free' && <button className="primary-button free-result-button" disabled={paymentState === 'loading'} onClick={onConfirmFree} type="button">{paymentState === 'loading' ? 'กำลังเปิดเลข...' : 'ยืนยันรับเลข 2 ตัวฟรี'}</button>}
         {error && choice !== 'donate' && <p className="payment-error" role="alert">{error}</p>}
       </section>
     </div>

@@ -592,19 +592,33 @@
   box-shadow: 0 12px 14px rgba(0, 0, 0, 0.64);
   animation: modal-in 260ms var(--ease-emphasized) both;
 }
+.donation-eyebrow { color: #ffe19a; text-shadow: 0 0 12px rgba(249, 217, 137, 0.28); }
 .donation-modal h2 { margin: 0; color: var(--sacred-light); font-size: 1.45rem; line-height: 1.2; outline: 0; }
-.donation-copy { margin: 12px 0 18px; color: rgba(255, 241, 210, 0.8); font-size: 0.9rem; line-height: 1.55; }
+.donation-title-shimmer {
+  background: linear-gradient(100deg, #fff8e8 12%, #ffe19a 42%, #ffffff 50%, #f5c86e 58%, #fff8e8 88%);
+  background-size: 240% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 8px rgba(249, 190, 92, 0.22));
+  animation: donation-text-shimmer 4.8s ease-in-out 2 both;
+}
+.donation-copy { margin: 12px 0 18px; color: rgba(255, 241, 210, 0.82); font-size: 0.9rem; line-height: 1.6; }
+.donation-copy strong { color: #9cf0b3; font-size: 1rem; text-shadow: 0 0 10px rgba(91, 241, 132, 0.38); white-space: nowrap; }
+.donation-copy span { display: block; margin-top: 8px; color: rgba(255, 246, 222, 0.72); }
 .donation-options { display: grid; margin: 0; padding: 0; border: 0; gap: 10px; }
 .donation-options legend { margin-bottom: 8px; color: var(--gold-light); font-size: 0.82rem; font-weight: 700; }
-.donation-option { display: flex; align-items: center; min-height: 64px; gap: 12px; padding: 11px 12px; border: 1px solid rgba(249, 217, 137, 0.28); border-radius: 14px; background: rgba(255, 245, 221, 0.04); cursor: pointer; }
-.donation-option.is-selected { border-color: rgba(249, 217, 137, 0.78); background: rgba(249, 217, 137, 0.08); }
+.donation-option { position: relative; display: flex; align-items: center; min-height: 64px; overflow: hidden; gap: 12px; padding: 11px 12px; border: 1px solid rgba(249, 217, 137, 0.28); border-radius: 14px; background: rgba(255, 245, 221, 0.04); cursor: pointer; transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+.donation-option::after { position: absolute; inset: -40% auto -40% -34%; width: 24%; pointer-events: none; content: ''; opacity: 0; background: linear-gradient(90deg, transparent, rgba(255, 248, 218, 0.32), transparent); transform: skewX(-16deg) translateX(0); }
+.donation-option.is-selected { border-color: rgba(249, 217, 137, 0.78); background: rgba(249, 217, 137, 0.08); box-shadow: inset 0 1px 0 rgba(255, 241, 205, 0.08), 0 0 16px rgba(222, 162, 72, 0.1); }
+.donation-option-paid.is-selected::after { animation: donation-option-sweep 1.15s ease-out both; }
 .donation-option.is-disabled { cursor: not-allowed; opacity: 0.56; }
 .donation-option input { flex: 0 0 auto; width: 20px; height: 20px; margin: 0; accent-color: var(--gold); }
 .donation-option > span { display: grid; gap: 3px; }
 .donation-option strong { font-size: 0.9rem; }
 .donation-option small { color: rgba(255, 241, 210, 0.62); font-size: 0.76rem; line-height: 1.35; }
-.donation-option-paid strong { color: #8de0a7; }
-.donation-option-free strong { color: #ff8d85; }
+.donation-option-paid strong { color: #9cf0b3; text-shadow: 0 0 10px rgba(91, 241, 132, 0.34); }
+.donation-option-free strong { color: #ffd9bd; text-shadow: 0 0 8px rgba(255, 185, 143, 0.18); }
 .beam-payment { display: grid; justify-items: center; margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(249, 217, 137, 0.18); }
 .beam-payment p { margin: 10px 0 0; text-align: center; }
 .beam-payment .primary-button { margin-top: 0; }
@@ -691,5 +705,7 @@
 @keyframes number-reveal-bounce { 0% { opacity: 0; transform: translateY(-10px) scale(0.85); } 55% { opacity: 1; transform: translateY(4px) scale(1.04); } 78% { transform: translateY(-2px) scale(0.99); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes result-shimmer { from { opacity: 0; transform: translateX(-80%) rotate(10deg); } 25% { opacity: 1; } to { opacity: 0; transform: translateX(80%) rotate(10deg); } }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes donation-text-shimmer { 0%, 18% { background-position: 100% 50%; } 58%, 100% { background-position: 0 50%; } }
+@keyframes donation-option-sweep { 0% { opacity: 0; transform: skewX(-16deg) translateX(0); } 24% { opacity: 1; } 100% { opacity: 0; transform: skewX(-16deg) translateX(620%); } }
 @keyframes digit-frame-pulse { 50% { border-color: rgba(255, 237, 177, 0.9); } }
 @keyframes question-pulse { 50% { filter: brightness(1.1); transform: scale(1.04); } }

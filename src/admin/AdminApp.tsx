@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ClipboardEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import './AdminApp.css'
 import { assetConfig } from '../config/assetConfig'
-import { observeAdminDashboard, observeAdminSession, prepareAdminSignIn, saveDonationAmount, signInAdmin, signOutAdmin } from '../services/adminDashboardService'
-import type { AdminDashboardData, AdminSession } from '../services/adminDashboardService'
+import { getAdminBeamChargeHistory, observeAdminDashboard, observeAdminSession, prepareAdminSignIn, saveDonationAmount, signInAdmin, signOutAdmin } from '../services/adminDashboardService'
+import type { AdminBeamCharge, AdminBeamChargeHistory, AdminDashboardData, AdminSession } from '../services/adminDashboardService'
 import type { ActivityRecord, AdminLuckyDrawRecord, DonationRecord } from '../types/ceremony'
 
-type AdminView = 'overview' | 'activities' | 'customers' | 'donations' | 'lucky'
+type AdminView = 'overview' | 'activities' | 'customers' | 'donations' | 'lucky' | 'beam-history'
 type BeamFilter = 'all' | 'paid' | 'pending'
 type BeamUiStatus = DonationRecord['status'] | 'not-created'
 type AdminLuckyPhase = 'idle' | 'three' | 'two' | 'summary'
@@ -64,7 +64,7 @@ function formatRemainingTime(expiresAt: number | undefined, now: number) {
   return [hours, minutes, seconds].map((value) => value.toString().padStart(2, '0')).join(':')
 }
 
-type AdminIconName = 'menu' | 'close' | 'overview' | 'activities' | 'customers' | 'donations' | 'lucky' | 'clock' | 'logout'
+type AdminIconName = 'menu' | 'close' | 'overview' | 'activities' | 'customers' | 'donations' | 'lucky' | 'beam-history' | 'clock' | 'logout'
 
 function AdminIcon({ name }: { name: AdminIconName }) {
   const paths: Record<AdminIconName, ReactNode> = {
@@ -75,6 +75,7 @@ function AdminIcon({ name }: { name: AdminIconName }) {
     customers: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></>,
     donations: <><rect height="14" rx="2" width="20" x="2" y="5" /><path d="M2 10h20M7 15h3" /></>,
     lucky: <><path d="m12 3 1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8-4.8-1.7 4.8-1.7L12 3Z" /><path d="m18.5 15 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" /></>,
+    'beam-history': <><path d="M3 5h18v14H3z" /><path d="M3 9h18M7 14h4M16 13v3M14.5 14.5h3" /></>,
     clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
     logout: <><path d="M10 17l5-5-5-5M15 12H3M15 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" /></>,
   }
@@ -203,6 +204,14 @@ function AdminApp() {
           <span className="admin-status-dot" />
           <span><strong>ระบบพร้อมใช้งาน</strong><small>ข้อมูลอัปเดตอัตโนมัติ</small></span>
         </div>
+        <nav aria-label="เมนูข้อมูลการชำระ" className="admin-sidebar-menu">
+          <p>การชำระเงิน</p>
+          <button aria-current={view === 'beam-history' ? 'page' : undefined} className={view === 'beam-history' ? 'is-active' : ''} onClick={() => selectView('beam-history')} type="button">
+            <AdminIcon name="beam-history" />
+            <span><strong>ประวัติชำระ Beam</strong><small>ข้อมูลจาก Beam API โดยตรง</small></span>
+            <span aria-hidden="true" className="admin-sidebar-menu-arrow">›</span>
+          </button>
+        </nav>
         <div className="admin-sidebar-footer">
           <div className="admin-session-countdown">
             <AdminIcon name="clock" />
@@ -233,6 +242,7 @@ function AdminApp() {
         {view === 'customers' && <LineCustomerHistory activities={dashboard.activities} />}
         {view === 'donations' && <DonationPanel amount={dashboard.donationAmount} donations={dashboard.donations} draws={dashboard.draws} isSaving={isSavingAmount} message={amountMessage} onUpdateAmount={updateAmount} />}
         {view === 'lucky' && <AdminLuckyDrawPanel />}
+        {view === 'beam-history' && <BeamApiHistoryPanel />}
       </div>
     </main>
   )
@@ -650,7 +660,7 @@ function DonationPanel({ amount, donations, draws, isSaving, message, onUpdateAm
   return (
     <section className="admin-content">
       <form className="admin-amount-form" onSubmit={submit}>
-        <div><p className="admin-kicker">ตั้งค่าการสนับสนุน</p><h2>ยอดสำหรับเปิดเลขที่เหลือ</h2><p>ยอดใหม่จะใช้กับรอบที่สร้างหลังจากบันทึก โดยรอบเดิมจะคงราคาเดิมไว้</p></div>
+        <div><p className="admin-kicker">ตั้งค่าบริการ</p><h2>ค่าบริการรับเลขครบ 2 ชุด</h2><p>ราคาใหม่จะใช้กับรอบที่สร้างหลังจากบันทึก โดยรอบเดิมจะคงราคาเดิมไว้</p></div>
         <label><span>จำนวนเงิน (บาท)</span><input inputMode="numeric" max="100000" min="1" onChange={(event) => setAmountInput(event.target.value.replace(/\D/g, '').slice(0, 6))} required type="number" value={amountInput} /></label>
         <button className="admin-primary-button" disabled={isSaving || !/^\d+$/.test(amountInput) || Number(amountInput) < 1 || Number(amountInput) > 100_000} type="submit">{isSaving ? 'กำลังบันทึก...' : 'บันทึกราคา'}</button>
         {message && <p className="admin-amount-message" role="status">{message}</p>}
@@ -662,7 +672,8 @@ function DonationPanel({ amount, donations, draws, isSaving, message, onUpdateAm
       </section>
       <div className="admin-beam-list-heading">
         <div><p className="admin-kicker">รายการจากระบบ Beam</p><h2>{activeFilter === 'all' ? 'รายการทั้งหมด' : activeFilter === 'paid' ? 'รายการชำระสำเร็จ' : 'รายการกำลังรอชำระ'}</h2></div>
-        <span>ดับเบิลคลิกที่การ์ดเพื่อดูรายละเอียด</span>
+        <span className="admin-beam-hint-desktop">ดับเบิลคลิกที่การ์ดเพื่อดูรายละเอียด</span>
+        <span className="admin-beam-hint-mobile">แตะรายการเพื่อดูรายละเอียด</span>
       </div>
       {beamItems.length === 0
         ? <div className="admin-empty">ยังไม่มีรายการเสี่ยงโชคหรือรายการจาก Beam</div>
@@ -682,20 +693,24 @@ function BeamRecordCard({ item, onOpen }: { item: BeamListItem; onOpen: () => vo
 
   return (
     <article className="admin-beam-card" onDoubleClick={onOpen}>
-      <header>
+      <header className="admin-beam-card-desktop">
         <time dateTime={itemCreatedAt(item)}>{formatDate(itemCreatedAt(item))}</time>
         <span className={statusClass(beamStatus)}>{beamStatusLabel(beamStatus)}</span>
       </header>
-      <div className="admin-beam-card-user">
+      <div className="admin-beam-card-user admin-beam-card-desktop">
         <span aria-hidden="true">{itemDisplayName(item).trim().slice(0, 1) || '?'}</span>
         <div><h3>{itemDisplayName(item)}</h3><p>{item.draw ? `${item.draw.userMode === 'line' ? 'LINE' : 'Guest'} · ${item.draw.deity === 'lakshmi' ? 'พระแม่ลักษมี' : 'พระคเณศ'}` : 'รายการ Beam เดิม'}</p></div>
       </div>
-      <dl className="admin-beam-card-summary">
+      <dl className="admin-beam-card-summary admin-beam-card-desktop">
         <div><dt>เลขที่ออก</dt><dd className="admin-result-number">{result}</dd></div>
         <div><dt>ยอด</dt><dd>{formatMoney(itemAmount(item))}</dd></div>
         <div><dt>สถานะรอบ</dt><dd>{item.draw ? drawStatusName(item.draw) : 'ข้อมูล Beam เดิม'}</dd></div>
       </dl>
-      <footer><code>{item.draw?.drawId ?? item.donation?.drawId ?? item.donation?.id ?? '-'}</code><button className="admin-text-button" onClick={onOpen} type="button">ดูรายละเอียด</button></footer>
+      <footer className="admin-beam-card-desktop"><code>{item.draw?.drawId ?? item.donation?.drawId ?? item.donation?.id ?? '-'}</code><button className="admin-text-button" onClick={onOpen} type="button">ดูรายละเอียด</button></footer>
+      <button aria-label={`ดูรายละเอียด ${itemDisplayName(item)}`} className="admin-beam-card-mobile" onClick={onOpen} type="button">
+        <span className="admin-beam-mobile-primary"><span aria-hidden="true" className="admin-beam-mobile-avatar">{itemDisplayName(item).trim().slice(0, 1) || '?'}</span><strong>{itemDisplayName(item)}</strong><span className={statusClass(beamStatus)}>{beamStatusLabel(beamStatus)}</span></span>
+        <span className="admin-beam-mobile-secondary"><time dateTime={itemCreatedAt(item)}>{formatDate(itemCreatedAt(item))}</time><strong>{result}</strong><span>{formatMoney(itemAmount(item))}</span><span aria-hidden="true" className="admin-beam-mobile-arrow">›</span></span>
+      </button>
     </article>
   )
 }
@@ -744,6 +759,198 @@ function BeamDetailModal({ item, onClose }: { item: BeamListItem; onClose: () =>
           <div><dt>ชำระเมื่อ</dt><dd>{donation?.paidAt || draw?.paidAt ? formatDate(donation?.paidAt ?? draw?.paidAt ?? '') : '-'}</dd></div>
           <div><dt>ส่งการ์ด LINE</dt><dd>{draw ? draw.lineCardSent ? 'ส่งแล้ว' : 'ยังไม่ส่ง' : '-'}</dd></div>
         </dl>
+      </section>
+    </div>
+  )
+}
+
+type BeamApiFilter = 'all' | 'succeeded' | 'pending' | 'failed'
+
+function normalizedBeamApiStatus(status: string) {
+  return status.trim().toLocaleUpperCase()
+}
+
+function beamApiStatusFilter(status: string): Exclude<BeamApiFilter, 'all'> {
+  const normalizedStatus = normalizedBeamApiStatus(status)
+  if (normalizedStatus === 'SUCCEEDED' || normalizedStatus === 'PAID') return 'succeeded'
+  if (normalizedStatus === 'PENDING' || normalizedStatus === 'PROCESSING') return 'pending'
+  return 'failed'
+}
+
+function beamApiStatusLabel(status: string) {
+  const normalizedStatus = normalizedBeamApiStatus(status)
+  if (normalizedStatus === 'SUCCEEDED' || normalizedStatus === 'PAID') return 'ชำระสำเร็จ'
+  if (normalizedStatus === 'PENDING' || normalizedStatus === 'PROCESSING') return 'กำลังดำเนินการ'
+  if (normalizedStatus === 'FAILED') return 'ชำระไม่สำเร็จ'
+  if (normalizedStatus === 'REFUNDED') return 'คืนเงินแล้ว'
+  if (normalizedStatus === 'EXPIRED') return 'หมดเวลา'
+  return normalizedStatus || 'ไม่ทราบสถานะ'
+}
+
+function beamApiStatusClass(status: string) {
+  const filter = beamApiStatusFilter(status)
+  return statusClass(filter === 'succeeded' ? 'paid' : filter === 'pending' ? 'pending' : 'failed')
+}
+
+function formatBeamApiMoney(amount: number, currency: string) {
+  const normalizedCurrency = currency.trim().toLocaleUpperCase() || 'THB'
+  const value = amount / 100
+  try {
+    return new Intl.NumberFormat('th-TH', {
+      style: 'currency',
+      currency: normalizedCurrency,
+      minimumFractionDigits: value % 1 === 0 ? 0 : 2,
+      maximumFractionDigits: 2,
+    }).format(value)
+  } catch {
+    return `${value.toLocaleString('th-TH')} ${normalizedCurrency}`
+  }
+}
+
+function BeamApiHistoryPanel() {
+  const [history, setHistory] = useState<AdminBeamChargeHistory | null>(null)
+  const [activeFilter, setActiveFilter] = useState<BeamApiFilter>('all')
+  const [selectedCharge, setSelectedCharge] = useState<AdminBeamCharge | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState('')
+  const requestSequence = useRef(0)
+  const closeSelectedCharge = useCallback(() => setSelectedCharge(null), [])
+
+  const refresh = useCallback(async () => {
+    const requestId = ++requestSequence.current
+    setIsLoading(true)
+    setError('')
+    try {
+      const nextHistory = await getAdminBeamChargeHistory()
+      if (requestId === requestSequence.current) setHistory(nextHistory)
+    } catch (loadError) {
+      if (requestId === requestSequence.current) {
+        setError(loadError instanceof Error ? loadError.message : 'โหลดประวัติการชำระ Beam ไม่สำเร็จ')
+      }
+    } finally {
+      if (requestId === requestSequence.current) setIsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+    return () => { requestSequence.current += 1 }
+  }, [refresh])
+
+  const charges = history?.charges ?? []
+  const succeededCount = charges.filter((charge) => beamApiStatusFilter(charge.status) === 'succeeded').length
+  const pendingCount = charges.filter((charge) => beamApiStatusFilter(charge.status) === 'pending').length
+  const failedCount = charges.length - succeededCount - pendingCount
+  const visibleCharges = activeFilter === 'all'
+    ? charges
+    : charges.filter((charge) => beamApiStatusFilter(charge.status) === activeFilter)
+  const filterHeading: Record<BeamApiFilter, string> = {
+    all: 'รายการทั้งหมดจาก Beam',
+    succeeded: 'รายการชำระสำเร็จ',
+    pending: 'รายการกำลังดำเนินการ',
+    failed: 'รายการที่ไม่สำเร็จหรือสิ้นสุดแล้ว',
+  }
+
+  return (
+    <section className="admin-content">
+      <header className="admin-beam-api-heading">
+        <div><p className="admin-kicker">ข้อมูลจาก Beam API โดยตรง</p><h1>ประวัติการชำระ Beam</h1><p>แสดง Charges ที่สร้างภายใต้บัญชี Merchant พร้อมสถานะและรายละเอียดที่ API ส่งกลับมา</p></div>
+        <button aria-busy={isLoading} className="admin-text-button admin-beam-refresh" disabled={isLoading} onClick={() => void refresh()} type="button">{isLoading ? 'กำลังอัปเดต...' : 'อัปเดตข้อมูล'}</button>
+      </header>
+
+      <section aria-label="กรองประวัติการชำระ Beam" className="admin-beam-api-metrics">
+        <BeamApiMetric active={activeFilter === 'all'} label="ทั้งหมด" onSelect={() => setActiveFilter('all')} value={charges.length} />
+        <BeamApiMetric active={activeFilter === 'succeeded'} label="ชำระสำเร็จ" onSelect={() => setActiveFilter('succeeded')} value={succeededCount} />
+        <BeamApiMetric active={activeFilter === 'pending'} label="กำลังดำเนินการ" onSelect={() => setActiveFilter('pending')} value={pendingCount} />
+        <BeamApiMetric active={activeFilter === 'failed'} label="ไม่สำเร็จ/สิ้นสุด" onSelect={() => setActiveFilter('failed')} value={failedCount} />
+      </section>
+
+      {error && <div className="admin-beam-api-error" role="alert"><p>{error}</p><button className="admin-text-button" onClick={() => void refresh()} type="button">ลองอีกครั้ง</button></div>}
+
+      <div className="admin-beam-list-heading">
+        <div><p className="admin-kicker">เรียงตามข้อมูลที่ Beam ส่งกลับ</p><h2>{filterHeading[activeFilter]}</h2></div>
+        {history && <span>อัปเดตล่าสุด {formatDate(history.fetchedAt)}</span>}
+      </div>
+
+      {isLoading && !history
+        ? <div aria-live="polite" className="admin-beam-api-loading">กำลังโหลดประวัติจาก Beam...</div>
+        : visibleCharges.length === 0
+          ? <div className="admin-empty">{charges.length === 0 ? 'ยังไม่มีรายการ Charge ในบัญชี Beam' : 'ไม่พบรายการในสถานะที่เลือก'}</div>
+          : <div className="admin-beam-api-grid">
+              {visibleCharges.map((charge, index) => <BeamApiChargeCard charge={charge} key={`${charge.id}-${index}`} onOpen={() => setSelectedCharge(charge)} />)}
+            </div>}
+
+      {history && Object.keys(history.metadata && typeof history.metadata === 'object' && !Array.isArray(history.metadata) ? history.metadata : {}).length > 0 && (
+        <details className="admin-beam-api-metadata">
+          <summary>ดูข้อมูลกำกับจาก Beam API</summary>
+          <pre>{JSON.stringify(history.metadata, null, 2)}</pre>
+        </details>
+      )}
+
+      {selectedCharge && <BeamApiDetailModal charge={selectedCharge} onClose={closeSelectedCharge} />}
+    </section>
+  )
+}
+
+function BeamApiMetric({ active, label, onSelect, value }: { active: boolean; label: string; onSelect: () => void; value: number }) {
+  return <button aria-pressed={active} className={active ? 'is-active' : ''} onClick={onSelect} type="button"><small>{label}</small><strong>{value.toLocaleString('th-TH')}</strong></button>
+}
+
+function BeamApiChargeCard({ charge, onOpen }: { charge: AdminBeamCharge; onOpen: () => void }) {
+  return (
+    <button aria-label={`ดูรายละเอียด Charge ${charge.id}`} className="admin-beam-api-card" onClick={onOpen} type="button">
+      <span className="admin-beam-api-card-head"><time dateTime={charge.createdAt}>{formatDate(charge.createdAt)}</time><span className={beamApiStatusClass(charge.status)}>{beamApiStatusLabel(charge.status)}</span></span>
+      <span className="admin-beam-api-card-main"><strong>{formatBeamApiMoney(charge.amount, charge.currency)}</strong><small>{charge.paymentMethodType || 'ไม่ระบุวิธีชำระ'}</small></span>
+      <span className="admin-beam-api-card-detail"><span><small>Reference ID</small><code>{charge.referenceId || '-'}</code></span><span><small>Charge ID</small><code>{charge.id}</code></span></span>
+      <span className="admin-beam-api-card-foot"><span>{charge.chargeSource || 'API'}</span><strong>ดูข้อมูลทั้งหมด <span aria-hidden="true">›</span></strong></span>
+    </button>
+  )
+}
+
+function BeamApiDetailModal({ charge, onClose }: { charge: AdminBeamCharge; onClose: () => void }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeButtonRef.current?.focus()
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+      if (event.key === 'Tab') {
+        event.preventDefault()
+        closeButtonRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', closeOnEscape)
+      previousActiveElement?.focus()
+    }
+  }, [onClose])
+
+  return (
+    <div className="admin-detail-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section aria-labelledby="beam-api-detail-title" aria-modal="true" className="admin-detail-modal admin-beam-api-modal" role="dialog">
+        <header><div><p className="admin-kicker">ข้อมูลจาก Beam API</p><h2 id="beam-api-detail-title">รายละเอียดการชำระ</h2></div><button aria-label="ปิดรายละเอียด" className="admin-detail-close" onClick={onClose} ref={closeButtonRef} type="button"><AdminIcon name="close" /></button></header>
+        <dl className="admin-detail-list">
+          <div><dt>Charge ID</dt><dd><code>{charge.id}</code></dd></div>
+          <div><dt>Reference ID</dt><dd><code>{charge.referenceId || '-'}</code></dd></div>
+          <div><dt>สถานะ</dt><dd><span className={beamApiStatusClass(charge.status)}>{beamApiStatusLabel(charge.status)}</span></dd></div>
+          <div><dt>ยอด</dt><dd>{formatBeamApiMoney(charge.amount, charge.currency)}</dd></div>
+          <div><dt>วิธีชำระ</dt><dd>{charge.paymentMethodType || '-'}</dd></div>
+          <div><dt>แหล่งรายการ</dt><dd>{charge.chargeSource || '-'}</dd></div>
+          <div><dt>สร้างเมื่อ</dt><dd>{formatDate(charge.createdAt)}</dd></div>
+          <div><dt>อัปเดตเมื่อ</dt><dd>{charge.updatedAt ? formatDate(charge.updatedAt) : '-'}</dd></div>
+          <div><dt>รหัสข้อผิดพลาด</dt><dd>{charge.failureCode || '-'}</dd></div>
+        </dl>
+        <section className="admin-beam-api-raw">
+          <h3>ข้อมูลทั้งหมดที่ Beam ส่งกลับ</h3>
+          <p>ชื่อฟิลด์คงรูปแบบเดิมจาก API และข้อมูลสำคัญด้านความปลอดภัยถูกปกปิด</p>
+          <pre>{JSON.stringify(charge.raw, null, 2)}</pre>
+        </section>
       </section>
     </div>
   )

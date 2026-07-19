@@ -71,6 +71,72 @@ function asTrimmedString(value: unknown, maximumLength: number) {
   return typeof value === 'string' ? value.trim().slice(0, maximumLength) : ''
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+const sensitiveBeamFieldNames = new Set([
+  'apikey',
+  'authorization',
+  'cardnumber',
+  'cvv',
+  'cvc',
+  'imagebase64encoded',
+  'pan',
+  'securitycode',
+])
+
+function sanitizeBeamApiValue(value: unknown, depth = 0): unknown {
+  if (depth > 10) return '[ละเว้นข้อมูลที่ซ้อนลึกเกินไป]'
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
+  if (typeof value === 'string') return value.length > 20_000 ? `${value.slice(0, 20_000)}…` : value
+  if (Array.isArray(value)) return value.slice(0, 2_000).map((item) => sanitizeBeamApiValue(item, depth + 1))
+  if (!isPlainRecord(value)) return String(value)
+
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLocaleLowerCase()
+    if (sensitiveBeamFieldNames.has(normalizedKey)) return [key, '[ปกปิดเพื่อความปลอดภัย]']
+    return [key, sanitizeBeamApiValue(item, depth + 1)]
+  }))
+}
+
+function extractBeamCharges(payload: unknown): { charges: Record<string, unknown>[]; metadata: unknown } {
+  if (Array.isArray(payload)) {
+    return {
+      charges: payload.filter(isPlainRecord),
+      metadata: { returnedCount: payload.length },
+    }
+  }
+
+  if (!isPlainRecord(payload)) return { charges: [], metadata: {} }
+
+  const listKeys = ['charges', 'data', 'items', 'results']
+  for (const key of listKeys) {
+    const candidate = payload[key]
+    if (!Array.isArray(candidate)) continue
+    const metadata = Object.fromEntries(Object.entries(payload).filter(([entryKey]) => entryKey !== key))
+    return { charges: candidate.filter(isPlainRecord), metadata }
+  }
+
+  const nestedData = isPlainRecord(payload.data) ? payload.data : undefined
+  if (nestedData) {
+    for (const key of listKeys) {
+      const candidate = nestedData[key]
+      if (!Array.isArray(candidate)) continue
+      const metadata = {
+        ...Object.fromEntries(Object.entries(payload).filter(([entryKey]) => entryKey !== 'data')),
+        data: Object.fromEntries(Object.entries(nestedData).filter(([entryKey]) => entryKey !== key)),
+      }
+      return { charges: candidate.filter(isPlainRecord), metadata }
+    }
+  }
+
+  return {
+    charges: typeof payload.chargeId === 'string' ? [payload] : [],
+    metadata: typeof payload.chargeId === 'string' ? {} : payload,
+  }
+}
+
 function isHttpsUrl(value: string) {
   try {
     return new URL(value).protocol === 'https:'
@@ -381,6 +447,59 @@ export const getAdminDashboard = onCall({ region, serviceAccount: runtimeService
       }
     }),
     donationAmount: readDonationAmount(donationConfig.data()?.amount),
+  }
+})
+
+export const getAdminBeamCharges = onCall({
+  region,
+  serviceAccount: runtimeServiceAccount,
+  secrets: [beamMerchantId, beamApiKey],
+}, async (request) => {
+  await requireAdminSession(request.data?.sessionToken)
+
+  const merchantId = beamMerchantId.value()
+  const apiKey = beamApiKey.value()
+  if (!merchantId || !apiKey) {
+    throw new HttpsError('failed-precondition', 'ยังไม่ได้ตั้งค่าการเชื่อมต่อ Beam บน Firebase')
+  }
+
+  const credentials = Buffer.from(`${merchantId}:${apiKey}`).toString('base64')
+  let response: Response
+  try {
+    response = await fetch(`${beamApiBaseUrl}/charges`, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Basic ${credentials}`,
+      },
+    })
+  } catch (error) {
+    logger.error('Unable to connect to Beam charge history API', {
+      message: error instanceof Error ? error.message : 'unknown error',
+    })
+    throw new HttpsError('unavailable', 'ยังไม่สามารถเชื่อมต่อประวัติการชำระ Beam ได้ กรุณาลองใหม่')
+  }
+
+  const responseBody = await response.text()
+  if (!response.ok) {
+    logger.error('Beam charge history request failed', {
+      status: response.status,
+      requestId: response.headers.get('x-request-id') ?? response.headers.get('x-beam-request-id') ?? undefined,
+    })
+    throw new HttpsError('unavailable', 'Beam ยังไม่สามารถส่งประวัติการชำระกลับมาได้ กรุณาลองใหม่')
+  }
+
+  let payload: unknown
+  try {
+    payload = JSON.parse(responseBody) as unknown
+  } catch {
+    throw new HttpsError('data-loss', 'Beam ส่งข้อมูลประวัติกลับมาในรูปแบบที่อ่านไม่ได้')
+  }
+
+  const history = extractBeamCharges(payload)
+  return {
+    charges: history.charges.map((charge) => sanitizeBeamApiValue(charge)),
+    metadata: sanitizeBeamApiValue(history.metadata),
+    fetchedAt: new Date().toISOString(),
   }
 })
 
