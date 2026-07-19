@@ -1,11 +1,26 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ClipboardEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import './AdminApp.css'
+import { assetConfig } from '../config/assetConfig'
 import { observeAdminDashboard, observeAdminSession, prepareAdminSignIn, saveDonationAmount, signInAdmin, signOutAdmin } from '../services/adminDashboardService'
 import type { AdminDashboardData, AdminSession } from '../services/adminDashboardService'
 import type { ActivityRecord, AdminLuckyDrawRecord, DonationRecord } from '../types/ceremony'
 
-type AdminView = 'overview' | 'activities' | 'customers' | 'donations'
+type AdminView = 'overview' | 'activities' | 'customers' | 'donations' | 'lucky'
+type BeamFilter = 'all' | 'paid' | 'pending'
+type BeamUiStatus = DonationRecord['status'] | 'not-created'
+type AdminLuckyPhase = 'idle' | 'three' | 'two' | 'summary'
+
+interface BeamListItem {
+  id: string
+  donation?: DonationRecord
+  draw?: AdminLuckyDrawRecord
+}
+
+interface AdminLocalLuckyResult {
+  threeDigits: string[]
+  twoDigits: string[]
+}
 
 interface LineCustomer {
   userId: string
@@ -41,11 +56,6 @@ function deityShortName(activity: ActivityRecord) {
   return activity.deity === 'lakshmi' ? 'พระแม่ลักษมี' : 'พระคเณศ'
 }
 
-function statusName(donation: DonationRecord) {
-  const names = { pending: 'รอชำระ', paid: 'ชำระแล้ว', failed: 'ไม่สำเร็จ', expired: 'หมดเวลา', refunded: 'คืนเงิน' }
-  return names[donation.status]
-}
-
 function formatRemainingTime(expiresAt: number | undefined, now: number) {
   const remainingSeconds = Math.max(0, Math.floor(((expiresAt ?? now) - now) / 1000))
   const hours = Math.floor(remainingSeconds / 3600)
@@ -54,7 +64,7 @@ function formatRemainingTime(expiresAt: number | undefined, now: number) {
   return [hours, minutes, seconds].map((value) => value.toString().padStart(2, '0')).join(':')
 }
 
-type AdminIconName = 'menu' | 'close' | 'overview' | 'activities' | 'customers' | 'donations' | 'clock' | 'logout'
+type AdminIconName = 'menu' | 'close' | 'overview' | 'activities' | 'customers' | 'donations' | 'lucky' | 'clock' | 'logout'
 
 function AdminIcon({ name }: { name: AdminIconName }) {
   const paths: Record<AdminIconName, ReactNode> = {
@@ -64,6 +74,7 @@ function AdminIcon({ name }: { name: AdminIconName }) {
     activities: <><path d="M7 3v3M17 3v3M4 9h16" /><rect height="17" rx="2" width="16" x="4" y="4" /><path d="m8 14 2.4 2.4L16 11" /></>,
     customers: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></>,
     donations: <><rect height="14" rx="2" width="20" x="2" y="5" /><path d="M2 10h20M7 15h3" /></>,
+    lucky: <><path d="m12 3 1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8-4.8-1.7 4.8-1.7L12 3Z" /><path d="m18.5 15 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" /></>,
     clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
     logout: <><path d="M10 17l5-5-5-5M15 12H3M15 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" /></>,
   }
@@ -210,6 +221,7 @@ function AdminApp() {
           <button aria-current={view === 'activities' ? 'page' : undefined} className={view === 'activities' ? 'is-active' : ''} onClick={() => selectView('activities')} type="button"><AdminIcon name="activities" /><span>ขอโชค</span></button>
           <button aria-current={view === 'customers' ? 'page' : undefined} className={view === 'customers' ? 'is-active' : ''} onClick={() => selectView('customers')} type="button"><AdminIcon name="customers" /><span>ลูกค้า</span></button>
           <button aria-current={view === 'donations' ? 'page' : undefined} className={view === 'donations' ? 'is-active' : ''} onClick={() => selectView('donations')} type="button"><AdminIcon name="donations" /><span>โดเนต</span></button>
+          <button aria-current={view === 'lucky' ? 'page' : undefined} className={view === 'lucky' ? 'is-active' : ''} onClick={() => selectView('lucky')} type="button"><AdminIcon name="lucky" /><span>ขอเลข</span></button>
         </nav>
       </header>
 
@@ -220,6 +232,7 @@ function AdminApp() {
         {view === 'activities' && <ActivityHistory activities={dashboard.activities} />}
         {view === 'customers' && <LineCustomerHistory activities={dashboard.activities} />}
         {view === 'donations' && <DonationPanel amount={dashboard.donationAmount} donations={dashboard.donations} draws={dashboard.draws} isSaving={isSavingAmount} message={amountMessage} onUpdateAmount={updateAmount} />}
+        {view === 'lucky' && <AdminLuckyDrawPanel />}
       </div>
     </main>
   )
@@ -560,8 +573,39 @@ function drawStatusName(draw: AdminLuckyDrawRecord) {
   return 'รอเลือกวิธีรับเลข'
 }
 
-function statusClass(status: DonationRecord['status'] | 'not-created') {
+function statusClass(status: BeamUiStatus) {
   return `admin-beam-status is-${status}`
+}
+
+function beamStatusForItem(item: BeamListItem): BeamUiStatus {
+  if (item.donation) return item.donation.status
+  if (item.draw?.status === 'paid') return 'paid'
+  if (item.draw?.status === 'payment_pending' && item.draw.currentChargeId) return 'pending'
+  return 'not-created'
+}
+
+function beamStatusLabel(status: BeamUiStatus) {
+  if (status === 'not-created') return 'ยังไม่สร้าง QR'
+  const names: Record<DonationRecord['status'], string> = {
+    pending: 'รอชำระ',
+    paid: 'ชำระแล้ว',
+    failed: 'ไม่สำเร็จ',
+    expired: 'หมดเวลา',
+    refunded: 'คืนเงิน',
+  }
+  return names[status]
+}
+
+function itemDisplayName(item: BeamListItem) {
+  return item.draw?.userDisplayName || item.donation?.userId || 'ไม่ทราบผู้ใช้'
+}
+
+function itemCreatedAt(item: BeamListItem) {
+  return item.draw?.createdAt ?? item.donation?.createdAt ?? ''
+}
+
+function itemAmount(item: BeamListItem) {
+  return item.draw?.amount ?? item.donation?.amount ?? 0
 }
 
 function DonationPanel({ amount, donations, draws, isSaving, message, onUpdateAmount }: {
@@ -573,6 +617,9 @@ function DonationPanel({ amount, donations, draws, isSaving, message, onUpdateAm
   onUpdateAmount: (amount: number) => void
 }) {
   const [amountInput, setAmountInput] = useState(String(amount))
+  const [activeFilter, setActiveFilter] = useState<BeamFilter>('all')
+  const [selectedItem, setSelectedItem] = useState<BeamListItem | null>(null)
+  const closeSelectedItem = useCallback(() => setSelectedItem(null), [])
   const donationsByDraw = useMemo(() => {
     const records = new Map<string, DonationRecord>()
     for (const donation of donations) {
@@ -582,8 +629,15 @@ function DonationPanel({ amount, donations, draws, isSaving, message, onUpdateAm
   }, [donations])
   const linkedDrawIds = useMemo(() => new Set(draws.map((draw) => draw.drawId)), [draws])
   const orphanDonations = useMemo(() => donations.filter((donation) => !donation.drawId || !linkedDrawIds.has(donation.drawId)), [donations, linkedDrawIds])
-  const paidDrawCount = draws.filter((draw) => draw.status === 'paid').length
-  const pendingDrawCount = draws.filter((draw) => draw.status === 'payment_pending').length
+  const beamItems = useMemo<BeamListItem[]>(() => [
+    ...draws.map((draw) => ({ id: `draw-${draw.drawId}`, draw, donation: donationsByDraw.get(draw.drawId) })),
+    ...orphanDonations.map((donation) => ({ id: `donation-${donation.id}`, donation })),
+  ], [donationsByDraw, draws, orphanDonations])
+  const paidItemCount = beamItems.filter((item) => beamStatusForItem(item) === 'paid').length
+  const pendingItemCount = beamItems.filter((item) => beamStatusForItem(item) === 'pending').length
+  const filteredItems = activeFilter === 'all'
+    ? beamItems
+    : beamItems.filter((item) => beamStatusForItem(item) === activeFilter)
 
   useEffect(() => setAmountInput(String(amount)), [amount])
 
@@ -601,38 +655,157 @@ function DonationPanel({ amount, donations, draws, isSaving, message, onUpdateAm
         <button className="admin-primary-button" disabled={isSaving || !/^\d+$/.test(amountInput) || Number(amountInput) < 1 || Number(amountInput) > 100_000} type="submit">{isSaving ? 'กำลังบันทึก...' : 'บันทึกราคา'}</button>
         {message && <p className="admin-amount-message" role="status">{message}</p>}
       </form>
-      <section className="admin-beam-overview" aria-label="สรุปรายการ Beam">
-        <div><small>รอบทั้งหมด</small><strong>{draws.length.toLocaleString('th-TH')}</strong></div>
-        <div><small>ชำระสำเร็จ</small><strong>{paidDrawCount.toLocaleString('th-TH')}</strong></div>
-        <div><small>กำลังรอชำระ</small><strong>{pendingDrawCount.toLocaleString('th-TH')}</strong></div>
+      <section className="admin-beam-overview" aria-label="กรองรายการ Beam">
+        <button aria-pressed={activeFilter === 'all'} className={activeFilter === 'all' ? 'is-active' : ''} onClick={() => setActiveFilter('all')} type="button"><small>รายการทั้งหมด</small><strong>{beamItems.length.toLocaleString('th-TH')}</strong></button>
+        <button aria-pressed={activeFilter === 'paid'} className={activeFilter === 'paid' ? 'is-active' : ''} onClick={() => setActiveFilter('paid')} type="button"><small>ชำระสำเร็จ</small><strong>{paidItemCount.toLocaleString('th-TH')}</strong></button>
+        <button aria-pressed={activeFilter === 'pending'} className={activeFilter === 'pending' ? 'is-active' : ''} onClick={() => setActiveFilter('pending')} type="button"><small>กำลังรอชำระ</small><strong>{pendingItemCount.toLocaleString('th-TH')}</strong></button>
       </section>
-      {draws.length === 0 && orphanDonations.length === 0
+      <div className="admin-beam-list-heading">
+        <div><p className="admin-kicker">รายการจากระบบ Beam</p><h2>{activeFilter === 'all' ? 'รายการทั้งหมด' : activeFilter === 'paid' ? 'รายการชำระสำเร็จ' : 'รายการกำลังรอชำระ'}</h2></div>
+        <span>ดับเบิลคลิกที่การ์ดเพื่อดูรายละเอียด</span>
+      </div>
+      {beamItems.length === 0
         ? <div className="admin-empty">ยังไม่มีรายการเสี่ยงโชคหรือรายการจาก Beam</div>
-        : <div className="admin-table-wrap admin-beam-table-wrap"><table className="admin-table admin-beam-table"><thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>Draw ID / Charge ID</th><th>เลขที่ออก</th><th>สถานะรอบ</th><th>ยอด</th><th>สถานะ Beam</th></tr></thead><tbody>
-            {draws.map((draw) => {
-              const donation = donationsByDraw.get(draw.drawId)
-              const beamStatus = donation?.status ?? 'not-created'
-              return <tr key={draw.drawId}>
-                <td data-label="เวลา">{formatDate(draw.createdAt)}</td>
-                <td data-label="ผู้ใช้"><strong>{draw.userDisplayName}</strong><small className="admin-cell-note">{draw.userMode === 'line' ? 'LINE' : 'Guest'} · {draw.deity === 'lakshmi' ? 'พระแม่ลักษมี' : 'พระคเณศ'}</small></td>
-                <td data-label="รหัส"><code>{draw.drawId}</code><small className="admin-cell-note">{donation?.paymentReference ?? draw.currentChargeId ?? 'ยังไม่มี Charge ID'}</small></td>
-                <td className="admin-result-number" data-label="เลขที่ออก">{drawResult(draw)}</td>
-                <td data-label="สถานะรอบ">{drawStatusName(draw)}</td>
-                <td data-label="ยอด">{formatMoney(draw.amount)}</td>
-                <td data-label="สถานะ Beam"><span className={statusClass(beamStatus)}>{donation ? statusName(donation) : 'ยังไม่สร้าง QR'}</span></td>
-              </tr>
-            })}
-            {orphanDonations.map((donation) => <tr key={`orphan-${donation.id}`}>
-              <td data-label="เวลา">{formatDate(donation.createdAt)}</td>
-              <td data-label="ผู้ใช้">{donation.userId}</td>
-              <td data-label="รหัส"><code>{donation.drawId ?? '-'}</code><small className="admin-cell-note">{donation.paymentReference ?? donation.id}</small></td>
-              <td data-label="เลขที่ออก">ไม่พบข้อมูลรอบ</td>
-              <td data-label="สถานะรอบ">ข้อมูล Beam เดิม</td>
-              <td data-label="ยอด">{formatMoney(donation.amount)}</td>
-              <td data-label="สถานะ Beam"><span className={statusClass(donation.status)}>{statusName(donation)}</span></td>
-            </tr>)}
-          </tbody></table></div>}
+        : filteredItems.length === 0
+          ? <div className="admin-empty">ไม่พบรายการในสถานะที่เลือก</div>
+          : <div className="admin-beam-card-grid">
+              {filteredItems.map((item) => <BeamRecordCard item={item} key={item.id} onOpen={() => setSelectedItem(item)} />)}
+            </div>}
+      {selectedItem && <BeamDetailModal item={selectedItem} onClose={closeSelectedItem} />}
     </section>
+  )
+}
+
+function BeamRecordCard({ item, onOpen }: { item: BeamListItem; onOpen: () => void }) {
+  const beamStatus = beamStatusForItem(item)
+  const result = item.draw ? drawResult(item.draw) : 'ไม่พบข้อมูลรอบ'
+
+  return (
+    <article className="admin-beam-card" onDoubleClick={onOpen}>
+      <header>
+        <time dateTime={itemCreatedAt(item)}>{formatDate(itemCreatedAt(item))}</time>
+        <span className={statusClass(beamStatus)}>{beamStatusLabel(beamStatus)}</span>
+      </header>
+      <div className="admin-beam-card-user">
+        <span aria-hidden="true">{itemDisplayName(item).trim().slice(0, 1) || '?'}</span>
+        <div><h3>{itemDisplayName(item)}</h3><p>{item.draw ? `${item.draw.userMode === 'line' ? 'LINE' : 'Guest'} · ${item.draw.deity === 'lakshmi' ? 'พระแม่ลักษมี' : 'พระคเณศ'}` : 'รายการ Beam เดิม'}</p></div>
+      </div>
+      <dl className="admin-beam-card-summary">
+        <div><dt>เลขที่ออก</dt><dd className="admin-result-number">{result}</dd></div>
+        <div><dt>ยอด</dt><dd>{formatMoney(itemAmount(item))}</dd></div>
+        <div><dt>สถานะรอบ</dt><dd>{item.draw ? drawStatusName(item.draw) : 'ข้อมูล Beam เดิม'}</dd></div>
+      </dl>
+      <footer><code>{item.draw?.drawId ?? item.donation?.drawId ?? item.donation?.id ?? '-'}</code><button className="admin-text-button" onClick={onOpen} type="button">ดูรายละเอียด</button></footer>
+    </article>
+  )
+}
+
+function BeamDetailModal({ item, onClose }: { item: BeamListItem; onClose: () => void }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const beamStatus = beamStatusForItem(item)
+  const draw = item.draw
+  const donation = item.donation
+
+  useEffect(() => {
+    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeButtonRef.current?.focus()
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+      if (event.key === 'Tab') {
+        event.preventDefault()
+        closeButtonRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', closeOnEscape)
+      previousActiveElement?.focus()
+    }
+  }, [onClose])
+
+  return (
+    <div className="admin-detail-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section aria-labelledby="beam-detail-title" aria-modal="true" className="admin-detail-modal" role="dialog">
+        <header><div><p className="admin-kicker">รายละเอียดรายการ</p><h2 id="beam-detail-title">{itemDisplayName(item)}</h2></div><button aria-label="ปิดรายละเอียด" className="admin-detail-close" onClick={onClose} ref={closeButtonRef} type="button"><AdminIcon name="close" /></button></header>
+        <dl className="admin-detail-list">
+          <div><dt>เวลา</dt><dd>{formatDate(itemCreatedAt(item))}</dd></div>
+          <div><dt>ผู้ใช้</dt><dd>{itemDisplayName(item)}{draw ? ` · ${draw.userMode === 'line' ? 'LINE' : 'Guest'}` : ''}</dd></div>
+          <div><dt>องค์เทพ</dt><dd>{draw ? draw.deity === 'lakshmi' ? 'พระแม่ประทานทรัพย์' : 'องค์พ่อประทานโชค' : '-'}</dd></div>
+          <div><dt>Draw ID</dt><dd><code>{draw?.drawId ?? donation?.drawId ?? '-'}</code></dd></div>
+          <div><dt>Charge ID</dt><dd><code>{donation?.paymentReference ?? draw?.currentChargeId ?? '-'}</code></dd></div>
+          <div><dt>เลขที่ออก</dt><dd className="admin-result-number">{draw ? drawResult(draw) : 'ไม่พบข้อมูลรอบ'}</dd></div>
+          <div><dt>สถานะรอบ</dt><dd>{draw ? drawStatusName(draw) : 'ข้อมูล Beam เดิม'}</dd></div>
+          <div><dt>ยอด</dt><dd>{formatMoney(itemAmount(item))}</dd></div>
+          <div><dt>สถานะ Beam</dt><dd><span className={statusClass(beamStatus)}>{beamStatusLabel(beamStatus)}</span></dd></div>
+          <div><dt>ชำระเมื่อ</dt><dd>{donation?.paidAt || draw?.paidAt ? formatDate(donation?.paidAt ?? draw?.paidAt ?? '') : '-'}</dd></div>
+          <div><dt>ส่งการ์ด LINE</dt><dd>{draw ? draw.lineCardSent ? 'ส่งแล้ว' : 'ยังไม่ส่ง' : '-'}</dd></div>
+        </dl>
+      </section>
+    </div>
+  )
+}
+
+function randomDigits(length: number) {
+  const values = new Uint32Array(length)
+  globalThis.crypto.getRandomValues(values)
+  return Array.from(values, (value) => String(value % 10))
+}
+
+function AdminLuckyDrawPanel() {
+  const [phase, setPhase] = useState<AdminLuckyPhase>('idle')
+  const [result, setResult] = useState<AdminLocalLuckyResult | null>(null)
+
+  useEffect(() => {
+    if (phase !== 'three' && phase !== 'two') return
+    const nextPhase: AdminLuckyPhase = phase === 'three' ? 'two' : 'summary'
+    const delay = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 350 : 1_600
+    const timer = window.setTimeout(() => setPhase(nextPhase), delay)
+    return () => window.clearTimeout(timer)
+  }, [phase])
+
+  function startDraw() {
+    setResult({ threeDigits: randomDigits(3), twoDigits: randomDigits(2) })
+    setPhase('three')
+  }
+
+  const isRevealing = phase === 'three' || phase === 'two'
+  const title = phase === 'idle'
+    ? 'ขอเลขเสี่ยงโชคมงคล'
+    : phase === 'three'
+      ? 'กำลังเปิดเลข 3 ตัว...'
+      : phase === 'two'
+        ? 'กำลังประทานเลข 2 ตัว...'
+        : 'เลขเสี่ยงโชคมงคล'
+
+  return (
+    <section className="admin-content">
+      <div className="admin-lucky-panel" aria-busy={isRevealing}>
+        <img alt="องค์พ่อประทานโชค" className="admin-lucky-background" src={assetConfig.luckyIncense} />
+        <div className="admin-lucky-overlay" />
+        <header><p className="admin-kicker">สำหรับผู้ดูแลระบบ</p><h1>{title}</h1><p>ออกเลขสำหรับตรวจสอบหรือใช้งานภายในเท่านั้น ระบบจะไม่สร้างรายการ Beam และไม่บันทึกข้อมูล</p></header>
+        <div aria-live="polite" className={`admin-lucky-stage is-${phase}`}>
+          {phase === 'idle' && <><LuckyDigitGroup digits={['?', '?', '?']} label="เลข 3 ตัว" /><LuckyDigitGroup accent digits={['?', '?']} label="เลข 2 ตัว" /></>}
+          {phase === 'three' && result && <LuckyDigitGroup digits={result.threeDigits} label="เลข 3 ตัว" />}
+          {phase === 'two' && result && <LuckyDigitGroup accent digits={result.twoDigits} label="เลข 2 ตัว" />}
+          {phase === 'summary' && result && <><LuckyDigitGroup digits={result.threeDigits} label="เลข 3 ตัว" /><LuckyDigitGroup accent digits={result.twoDigits} label="เลข 2 ตัว" /></>}
+        </div>
+        <button className="admin-primary-button admin-lucky-button" disabled={isRevealing} onClick={startDraw} type="button">{isRevealing ? 'กำลังเปิดเลข...' : phase === 'summary' ? 'ขอเลขชุดใหม่' : 'ขอเลขเสี่ยงโชค'}</button>
+        <p className="admin-lucky-note">โหมดแอดมิน · ไม่มีหน้าบริจาค · ไม่เก็บประวัติ</p>
+      </div>
+    </section>
+  )
+}
+
+function LuckyDigitGroup({ accent = false, digits, label }: { accent?: boolean; digits: string[]; label: string }) {
+  return (
+    <div className={`admin-lucky-number-group${accent ? ' is-accent' : ''}`}>
+      <small>{label}</small>
+      <div>{digits.map((digit, index) => <span key={`${digit}-${index}`}>{digit}</span>)}</div>
+    </div>
   )
 }
 
