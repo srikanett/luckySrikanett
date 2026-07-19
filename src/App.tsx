@@ -3,12 +3,13 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import './App.css'
 import { assetConfig, deityConfig } from './config/assetConfig'
 import { brandConfig, campaignConfig } from './config/brandConfig'
-import { saveActivityRecord } from './services/activityService'
-import { generateLuckyResult } from './services/resultGeneratorService'
 import { initializeLiff, sendResultToLine } from './services/liffService'
 import type { LiffSession } from './services/liffService'
+import { initializeAnonymousUser } from './services/anonymousAuthService'
+import { createLuckyCardImage, downloadLuckyCard } from './services/luckyCardService'
+import { completeWithoutDonation, createBeamQr, createLuckyDraw, getLuckyDrawStatus, markLuckyCardSent, resumeLuckyDraw, saveLuckyCard } from './services/luckyDrawService'
 import { getSessionId } from './utils/session'
-import type { ActivityKind, AppScreen, DeityId, LuckyResult } from './types/ceremony'
+import type { ActivityKind, AppScreen, DeityId, LuckyDraw, LuckyResult } from './types/ceremony'
 
 const particles = Array.from({ length: 10 }, (_, index) => ({
   id: index,
@@ -56,14 +57,63 @@ function useRuntimePreferences() {
   return { isPageVisible, isPowerSaving }
 }
 
+// Locks the app height once LINE's in-app toolbar has settled, instead of tracking
+// it live — a live-tracked height would shift the whole layout (and desync every
+// position/timing-based animation) whenever the toolbar shows or hides mid-session.
+function useLiffViewportHeight() {
+  useEffect(() => {
+    const root = document.documentElement
+    const applyHeight = () => {
+      const height = window.visualViewport?.height ?? window.innerHeight
+      root.style.setProperty('--app-vh', `${height}px`)
+    }
+
+    applyHeight()
+    const settleTimeoutId = window.setTimeout(applyHeight, 400)
+    window.addEventListener('orientationchange', applyHeight)
+
+    return () => {
+      window.clearTimeout(settleTimeoutId)
+      window.removeEventListener('orientationchange', applyHeight)
+    }
+  }, [])
+}
+
+function usePreventTouchZoom() {
+  useEffect(() => {
+    const preventGesture = (event: Event) => event.preventDefault()
+    const preventMultiTouch = (event: TouchEvent) => {
+      if (event.touches.length > 1) event.preventDefault()
+    }
+
+    document.addEventListener('gesturestart', preventGesture, { passive: false })
+    document.addEventListener('gesturechange', preventGesture, { passive: false })
+    document.addEventListener('touchmove', preventMultiTouch, { passive: false })
+
+    return () => {
+      document.removeEventListener('gesturestart', preventGesture)
+      document.removeEventListener('gesturechange', preventGesture)
+      document.removeEventListener('touchmove', preventMultiTouch)
+    }
+  }, [])
+}
+
 function App() {
+  useLiffViewportHeight()
+  usePreventTouchZoom()
   const [screen, setScreen] = useState<AppScreen>('welcome')
   const [activity, setActivity] = useState<ActivityKind | null>(null)
   const [selectedDeity, setSelectedDeity] = useState<DeityId>('ganesha')
   const [deityIndex, setDeityIndex] = useState(0)
   const [burningProgress, setBurningProgress] = useState(0)
-  const [burningDigits, setBurningDigits] = useState<string[] | null>(null)
-  const [revealedDigitCount, setRevealedDigitCount] = useState(0)
+  const [draw, setDraw] = useState<LuckyDraw | null>(null)
+  const [ritualPhase, setRitualPhase] = useState<'initial' | 'paid-three' | 'paid-two'>('initial')
+  const [showDonationModal, setShowDonationModal] = useState(false)
+  const [paymentChoice, setPaymentChoice] = useState<'donate' | 'free' | null>(null)
+  const [paymentState, setPaymentState] = useState<'idle' | 'loading' | 'waiting' | 'error'>('idle')
+  const [paymentError, setPaymentError] = useState('')
+  const [isStartingRitual, setIsStartingRitual] = useState(false)
+  const [videoVersion, setVideoVersion] = useState(0)
   const [result, setResult] = useState<LuckyResult | null>(null)
   const [lineSession, setLineSession] = useState<LiffSession>({ mode: 'guest' })
   const [lineStatus, setLineStatus] = useState<'idle' | 'pending' | 'success' | 'error'>('idle')
@@ -72,19 +122,78 @@ function App() {
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [toast, setToast] = useState('')
   const [shouldLoadWelcomeVideo, setShouldLoadWelcomeVideo] = useState(false)
-  const resultPromiseRef = useRef<Promise<LuckyResult> | null>(null)
-  const revealRequestedRef = useRef(false)
-  const completionRequestedRef = useRef(false)
-  const ritualElapsedRef = useRef(0)
   const mountedRef = useRef(true)
+  const liffStartedRef = useRef(false)
+  const paidRevealStartedRef = useRef(false)
+  const cardDeliveryRef = useRef(false)
+  const cardCacheRef = useRef<{ drawId: string; imageDataUrl: string } | null>(null)
+  const revealSequenceRef = useRef(0)
+  const activeDrawRef = useRef<LuckyDraw | null>(null)
+  activeDrawRef.current = draw
   const sessionId = useMemo(() => getSessionId(), [])
   const { isPageVisible, isPowerSaving } = useRuntimePreferences()
 
-  useEffect(() => {
-    void initializeLiff().then((session) => {
-      if (mountedRef.current) setLineSession(session)
-    })
+  const prepareLuckyCard = useCallback(async (paidDraw: LuckyDraw) => {
+    if (cardCacheRef.current?.drawId === paidDraw.drawId) return cardCacheRef.current.imageDataUrl
+    const deity = deityConfig.find((item) => item.id === paidDraw.deity) ?? deityConfig[0]
+    const imageDataUrl = await createLuckyCardImage(paidDraw, deity.image, deity.label)
+    cardCacheRef.current = { drawId: paidDraw.drawId, imageDataUrl }
+    return imageDataUrl
   }, [])
+
+  const deliverLuckyCardToLine = useCallback(async (paidDraw: LuckyDraw) => {
+    if (lineSession.mode !== 'line' || paidDraw.lineCardSent || cardDeliveryRef.current) return false
+    cardDeliveryRef.current = true
+    try {
+      const imageDataUrl = await prepareLuckyCard(paidDraw)
+      const imageUrl = paidDraw.cardImageUrl ?? (await saveLuckyCard(paidDraw, imageDataUrl)).imageUrl
+      const sent = await sendResultToLine(lineSession, toLuckyResult(paidDraw, true), brandConfig.brandName, imageUrl)
+      if (sent) await markLuckyCardSent(paidDraw)
+      return sent
+    } catch (error) {
+      if (import.meta.env.DEV) console.warn('[lucky-card] automatic delivery failed', error)
+      return false
+    } finally {
+      cardDeliveryRef.current = false
+    }
+  }, [lineSession, prepareLuckyCard])
+
+  useEffect(() => {
+    if (liffStartedRef.current) return
+    liffStartedRef.current = true
+    void (async () => {
+      try {
+        const session = await initializeLiff()
+        if (!mountedRef.current) return
+        setLineSession(session)
+        if (session.mode === 'guest') await initializeAnonymousUser()
+        const restoredDraw = await resumeLuckyDraw(session.accessToken)
+        if (!mountedRef.current || !restoredDraw) return
+        setDraw(restoredDraw)
+        setActivity('luck')
+        setBurningProgress(1)
+        if (restoredDraw.status === 'paid' && restoredDraw.threeDigitResult && restoredDraw.twoDigitResult) {
+          setResult(toLuckyResult(restoredDraw, true))
+          setScreen('result')
+          return
+        }
+        setRitualPhase('initial')
+        setPaymentChoice(restoredDraw.status === 'payment_pending' ? 'donate' : null)
+        setPaymentState(restoredDraw.status === 'payment_pending' ? 'waiting' : 'idle')
+        setShowDonationModal(true)
+        setScreen('incense-burning')
+      } catch (error) {
+        if (import.meta.env.DEV) console.warn('[draw] could not restore active draw', error)
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    if (screen !== 'result' || !result?.bonusDigits || !draw || lineSession.mode !== 'line' || draw.lineCardSent) return
+    void deliverLuckyCardToLine(draw).then((sent) => {
+      if (sent && mountedRef.current) setToast('ส่งการ์ดเลขมงคลเข้า LINE แล้ว')
+    })
+  }, [deliverLuckyCardToLine, draw, lineSession.mode, result, screen])
 
   useEffect(() => {
     mountedRef.current = true
@@ -109,49 +218,12 @@ function App() {
     return () => window.clearTimeout(timeoutId)
   }, [toast])
 
-  const completeRitual = useCallback(async () => {
-    try {
-      const resultPromise = resultPromiseRef.current ?? generateLuckyResult(campaignConfig)
-      const nextResult = await resultPromise
-
-      void saveActivityRecord({
-        id: `${sessionId}-${Date.now()}`,
-        userId: lineSession.profile?.userId ?? sessionId,
-        sessionId,
-        userDisplayName: lineSession.profile?.displayName,
-        userPictureUrl: lineSession.profile?.pictureUrl,
-        userMode: lineSession.mode,
-        deity: selectedDeity,
-        activity: 'luck',
-        type: 'lucky_incense',
-        result: nextResult.digits.join(''),
-        digitLength: nextResult.digits.length,
-        createdAt: new Date().toISOString(),
-        lineMessageSent: false,
-        lineLiftSynced: false,
-      }, lineSession.accessToken).catch(() => {
-        if (import.meta.env.DEV) console.warn('[activity] could not save history')
-      })
-
-      if (mountedRef.current) {
-        setResult(nextResult)
-        setScreen('result')
-      }
-    } catch {
-      if (mountedRef.current) {
-        setScreen('incense-idle')
-        setToast('ลองเริ่มพิธีอีกครั้ง')
-      }
-    }
-  }, [lineSession.accessToken, lineSession.mode, lineSession.profile?.displayName, lineSession.profile?.pictureUrl, lineSession.profile?.userId, selectedDeity, sessionId])
-
   useEffect(() => {
-    if (screen !== 'incense-burning' || !isPageVisible) return
+    if (screen !== 'incense-burning' || ritualPhase !== 'initial' || !draw || showDonationModal || !isPageVisible || burningProgress >= 1) return
 
-    const startedAt = performance.now() - ritualElapsedRef.current
+    const startedAt = performance.now() - (burningProgress * campaignConfig.ritualDurationMs)
     let animationFrame = 0
     let lastProgressUpdate = 0
-    let lastDigitCount = -1
 
     const tick = (now: number) => {
       const progress = Math.min(1, (now - startedAt) / campaignConfig.ritualDurationMs)
@@ -160,24 +232,8 @@ function App() {
         setBurningProgress(progress)
       }
 
-      const nextDigitCount = progress < 0.42 ? 0 : progress < 0.62 ? 1 : progress < 0.82 ? 2 : 3
-      if (nextDigitCount !== lastDigitCount) {
-        lastDigitCount = nextDigitCount
-        setRevealedDigitCount(nextDigitCount)
-      }
-
-      if (progress >= 0.35 && !revealRequestedRef.current && resultPromiseRef.current) {
-        revealRequestedRef.current = true
-        void resultPromiseRef.current.then((nextResult) => {
-          if (mountedRef.current) setBurningDigits(nextResult.digits)
-        })
-      }
-
       if (progress >= 1) {
-        if (!completionRequestedRef.current) {
-          completionRequestedRef.current = true
-          void completeRitual()
-        }
+        setShowDonationModal(true)
         return
       }
 
@@ -185,23 +241,80 @@ function App() {
     }
 
     animationFrame = window.requestAnimationFrame(tick)
-    return () => {
-      ritualElapsedRef.current = Math.min(campaignConfig.ritualDurationMs, performance.now() - startedAt)
-      window.cancelAnimationFrame(animationFrame)
+    return () => window.cancelAnimationFrame(animationFrame)
+  }, [burningProgress, draw, isPageVisible, ritualPhase, screen, showDonationModal])
+
+  const runPaidReveal = useCallback(async (paidDraw: LuckyDraw) => {
+    if (!paidDraw.threeDigitResult || !paidDraw.twoDigitResult || paidRevealStartedRef.current) return
+    paidRevealStartedRef.current = true
+    const sequence = ++revealSequenceRef.current
+    setShowDonationModal(false)
+    setPaymentState('idle')
+    setRitualPhase('paid-three')
+    setBurningProgress(1)
+    setVideoVersion((version) => version + 1)
+    setScreen('incense-burning')
+
+    await new Promise((resolve) => window.setTimeout(resolve, isPowerSaving ? 500 : 1900))
+    if (!mountedRef.current || revealSequenceRef.current !== sequence) return
+    setRitualPhase('paid-two')
+    setVideoVersion((version) => version + 1)
+
+    await new Promise((resolve) => window.setTimeout(resolve, isPowerSaving ? 500 : 1900))
+    if (!mountedRef.current || revealSequenceRef.current !== sequence) return
+    setResult(toLuckyResult(paidDraw, true))
+    setScreen('result')
+    paidRevealStartedRef.current = false
+  }, [isPowerSaving])
+
+  const pollingDrawId = draw?.drawId
+  const pollingDrawToken = draw?.drawToken
+  const pollingDrawStatus = draw?.status
+
+  useEffect(() => {
+    if (!pollingDrawId || !pollingDrawToken || pollingDrawStatus !== 'payment_pending' || !showDonationModal || !isPageVisible) return
+    let cancelled = false
+
+    async function refreshPayment() {
+      try {
+        const currentDraw = activeDrawRef.current
+        if (!currentDraw) return
+        const latestDraw = await getLuckyDrawStatus(currentDraw)
+        if (cancelled || !mountedRef.current) return
+        setDraw(latestDraw)
+        if (latestDraw.status === 'paid') {
+          void runPaidReveal(latestDraw)
+        } else if (!latestDraw.qrImageBase64) {
+          setPaymentState('idle')
+        }
+      } catch (error) {
+        if (!cancelled && import.meta.env.DEV) console.warn('[draw] payment status unavailable', error)
+      }
     }
-  }, [completeRitual, isPageVisible, screen])
+
+    void refreshPayment()
+    const timer = window.setInterval(() => void refreshPayment(), 4000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [isPageVisible, pollingDrawId, pollingDrawStatus, pollingDrawToken, runPaidReveal, showDonationModal])
 
   const currentAsset = screen === 'welcome' ? assetConfig.welcome :
     screen === 'activity' || screen === 'wish-placeholder' || screen === 'deity'
       ? assetConfig.templeTransition
       : assetConfig.luckyIncense
 
-  const incenseDigits = burningDigits
-    ? burningDigits.map((digit, index) => index < revealedDigitCount ? digit : '?')
-    : ['?', '?', '?']
+  const incenseDigits = ritualPhase === 'paid-three'
+    ? draw?.threeDigitResult ?? ['?', '?', '?']
+    : ritualPhase === 'paid-two'
+      ? draw?.twoDigitResult ?? ['?', '?']
+      : draw
+        ? [burningProgress >= 0.42 ? draw.previewDigits[0] : '?', burningProgress >= 0.7 ? draw.previewDigits[1] : '?', '?']
+        : ['?', '?', '?']
   const isVideoAllowed = isPageVisible && !isPowerSaving
   const showWelcomeVideo = screen === 'welcome' && shouldLoadWelcomeVideo && isVideoAllowed
-  const showIncenseVideo = screen === 'incense-burning' && isVideoAllowed
+  const showIncenseVideo = screen === 'incense-burning' && isVideoAllowed && !showDonationModal
   const activeParticles = particles.slice(0, isPowerSaving ? 3 : 6)
 
   function selectActivity(nextActivity: ActivityKind) {
@@ -233,42 +346,118 @@ function App() {
     }
 
     setBurningProgress(0)
-    setBurningDigits(null)
-    setRevealedDigitCount(0)
+    setDraw(null)
+    setRitualPhase('initial')
+    setShowDonationModal(false)
+    setPaymentChoice(null)
+    setPaymentState('idle')
     setSaved(false)
     setToast('')
-    ritualElapsedRef.current = 0
-    revealRequestedRef.current = false
-    completionRequestedRef.current = false
-    resultPromiseRef.current = generateLuckyResult(campaignConfig)
     setScreen('incense-idle')
   }
 
-  function startRitual() {
-    if (screen !== 'incense-idle') return
+  async function startRitual() {
+    if (screen !== 'incense-idle' || isStartingRitual) return
+    setIsStartingRitual(true)
     setBurningProgress(0)
-    setBurningDigits(null)
-    setRevealedDigitCount(0)
-    ritualElapsedRef.current = 0
-    revealRequestedRef.current = false
-    completionRequestedRef.current = false
-    resultPromiseRef.current = generateLuckyResult(campaignConfig)
+    setRitualPhase('initial')
+    setShowDonationModal(false)
+    setPaymentChoice(null)
+    setPaymentError('')
     setScreen('incense-burning')
+    try {
+      if (lineSession.mode === 'guest') await initializeAnonymousUser()
+      const nextDraw = await createLuckyDraw({
+        sessionId,
+        deity: selectedDeity,
+        ...(lineSession.accessToken ? { lineAccessToken: lineSession.accessToken } : {}),
+      })
+      if (!mountedRef.current) return
+      setDraw(nextDraw)
+      setVideoVersion((version) => version + 1)
+      if (nextDraw.status === 'payment_pending') {
+        setBurningProgress(1)
+        setPaymentChoice('donate')
+        setPaymentState('waiting')
+        setShowDonationModal(true)
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setScreen('incense-idle')
+        setToast(error instanceof Error ? error.message : 'ลองเริ่มพิธีอีกครั้ง')
+      }
+    } finally {
+      if (mountedRef.current) setIsStartingRitual(false)
+    }
   }
 
-  async function saveBlessing() {
-    if (!result || isSaving || saved) return
+  async function chooseDonation() {
+    if (!draw || paymentState === 'loading') return
+    setPaymentChoice('donate')
+    setPaymentState('loading')
+    setPaymentError('')
+    try {
+      if (lineSession.mode === 'guest') await initializeAnonymousUser()
+      const nextDraw = await createBeamQr(draw, lineSession.accessToken)
+      if (!mountedRef.current) return
+      setDraw(nextDraw)
+      if (nextDraw.status === 'paid') {
+        void runPaidReveal(nextDraw)
+        return
+      }
+      setPaymentState('waiting')
+    } catch (error) {
+      if (!mountedRef.current) return
+      setPaymentState('error')
+      setPaymentError(error instanceof Error ? error.message : 'สร้าง QR ไม่สำเร็จ')
+    }
+  }
+
+  async function finishWithoutDonation() {
+    if (!draw || paymentState === 'loading') return
+    setPaymentChoice('free')
+    setPaymentState('loading')
+    setPaymentError('')
+    try {
+      const completedDraw = await completeWithoutDonation(draw)
+      if (!mountedRef.current) return
+      setDraw(completedDraw)
+      if (completedDraw.status === 'paid') {
+        void runPaidReveal(completedDraw)
+        return
+      }
+      if (!completedDraw.twoDigitResult) return
+      setShowDonationModal(false)
+      setResult(toLuckyResult(completedDraw, false))
+      setScreen('result')
+    } catch (error) {
+      if (!mountedRef.current) return
+      setPaymentState('error')
+      setPaymentError(error instanceof Error ? error.message : 'เปิดผลเลขไม่สำเร็จ')
+    }
+  }
+
+  async function saveCard() {
+    if (!result?.bonusDigits || !draw || isSaving) return
     setIsSaving(true)
-    await new Promise((resolve) => window.setTimeout(resolve, 420))
-    setIsSaving(false)
-    setSaved(true)
-    setToast('บันทึกพรแล้ว')
+    try {
+      const imageDataUrl = await prepareLuckyCard(draw)
+      downloadLuckyCard(imageDataUrl, draw.deity)
+      setSaved(true)
+      setToast('บันทึกการ์ดเลขมงคลแล้ว')
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'บันทึกการ์ดไม่สำเร็จ')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   async function shareToLine() {
     if (!result || lineStatus === 'pending') return
     setLineStatus('pending')
-    const sent = await sendResultToLine(lineSession, result, brandConfig.brandName)
+    const sent = result.bonusDigits && draw
+      ? await deliverLuckyCardToLine({ ...draw, lineCardSent: false })
+      : await sendResultToLine(lineSession, result, brandConfig.brandName)
     if (!mountedRef.current) return
     setLineStatus(sent ? 'success' : 'error')
   }
@@ -276,13 +465,19 @@ function App() {
   function resetCeremony() {
     setActivity(null)
     setResult(null)
-    setBurningDigits(null)
+    setDraw(null)
     setBurningProgress(0)
-    setRevealedDigitCount(0)
+    setRitualPhase('initial')
+    setShowDonationModal(false)
+    setPaymentChoice(null)
+    setPaymentState('idle')
     setLineStatus('idle')
     setSaved(false)
     setToast('')
-    ritualElapsedRef.current = 0
+    revealSequenceRef.current += 1
+    paidRevealStartedRef.current = false
+    cardCacheRef.current = null
+    cardDeliveryRef.current = false
     setScreen('welcome')
   }
 
@@ -293,7 +488,6 @@ function App() {
     if (screen === 'wish-placeholder') setScreen('deity')
   }
 
-  const screenNumber = screen === 'welcome' ? '01' : screen === 'activity' || screen === 'deity' ? '02' : screen === 'wish-placeholder' ? '03' : screen === 'result' ? '04' : '03'
   const isRitual = screen === 'incense-idle' || screen === 'incense-burning'
 
   return (
@@ -301,7 +495,7 @@ function App() {
       <div className="scene-stage">
         <ImageLayer src={currentAsset} alt="บรรยากาศศรีคเนศ เทวาลัย" />
         {showWelcomeVideo && <VideoLayer src={assetConfig.welcomeVideo} poster={assetConfig.welcome} loop />}
-        {showIncenseVideo && <VideoLayer src={assetConfig.luckyIncenseBurningVideo} poster={assetConfig.luckyIncense} />}
+        {showIncenseVideo && <VideoLayer key={`incense-${videoVersion}`} src={assetConfig.luckyIncenseBurningVideo} poster={assetConfig.luckyIncense} />}
         <div className="scene-vignette" />
         <div className="scene-wash" />
         <div className="particle-field" aria-hidden="true">
@@ -330,8 +524,6 @@ function App() {
           >
             <span aria-hidden="true">‹</span>
           </button>
-          <span className="step-count">{screenNumber}</span>
-          <span className="brand-mark">เทวาลัย</span>
           <button
             aria-label={soundEnabled ? 'ปิดเสียง' : 'เปิดเสียง'}
             className="icon-button sound-button"
@@ -351,14 +543,16 @@ function App() {
               onMove={moveDeity}
               onSelect={selectDeity}
               onContinue={beginCeremony}
-              playVideo={isVideoAllowed}
             />
           )}
           {isRitual && (
             <IncenseScreen
               burning={screen === 'incense-burning'}
               digits={incenseDigits}
+              fadedDigitIndex={ritualPhase === 'initial' && burningProgress >= 0.7 ? 1 : undefined}
+              phase={ritualPhase}
               progress={burningProgress}
+              starting={isStartingRitual}
               onStart={startRitual}
             />
           )}
@@ -368,7 +562,8 @@ function App() {
               result={result}
               saved={saved}
               saving={isSaving}
-              onSave={saveBlessing}
+              showLineAction={lineSession.mode === 'line'}
+              onSave={saveCard}
               onLine={shareToLine}
               onReset={resetCeremony}
             />
@@ -385,9 +580,30 @@ function App() {
       {lineStatus !== 'idle' && (
         <LineModal status={lineStatus} mode={lineSession.mode} onClose={() => setLineStatus('idle')} onRetry={shareToLine} />
       )}
+      {showDonationModal && draw && (
+        <DonationModal
+          choice={paymentChoice}
+          draw={draw}
+          error={paymentError}
+          paymentState={paymentState}
+          onChooseDonation={chooseDonation}
+          onChooseFree={() => { setPaymentChoice('free'); setPaymentState('idle'); setPaymentError('') }}
+          onConfirmFree={finishWithoutDonation}
+        />
+      )}
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
   )
+}
+
+function toLuckyResult(draw: LuckyDraw, paid: boolean): LuckyResult {
+  return {
+    digits: paid ? draw.threeDigitResult ?? [] : draw.twoDigitResult ?? [],
+    ...(paid && draw.twoDigitResult ? { bonusDigits: draw.twoDigitResult } : {}),
+    drawId: draw.drawId,
+    createdAt: draw.createdAt,
+    campaignId: campaignConfig.id,
+  }
 }
 
 function ImageLayer({ src, alt }: { src: string; alt: string }) {
@@ -463,7 +679,7 @@ function ActivityScreen({ selected, onSelect }: { selected: ActivityKind | null;
   )
 }
 
-function DeityScreen({ activeIndex, onMove, onSelect, onContinue, playVideo }: { activeIndex: number; onMove: (direction: -1 | 1) => void; onSelect: (index: number) => void; onContinue: () => void; playVideo: boolean }) {
+function DeityScreen({ activeIndex, onMove, onSelect, onContinue }: { activeIndex: number; onMove: (direction: -1 | 1) => void; onSelect: (index: number) => void; onContinue: () => void }) {
   const pointerStart = useRef<number | null>(null)
   const didDrag = useRef(false)
   const [dragOffset, setDragOffset] = useState(0)
@@ -530,21 +746,7 @@ function DeityScreen({ activeIndex, onMove, onSelect, onContinue, playVideo }: {
               onClick={() => handleCardClick(index)}
               type="button"
             >
-              {playVideo && index === activeIndex && deity.video ? (
-                <video
-                  aria-hidden="true"
-                  autoPlay
-                  className="deity-card-media"
-                  loop
-                  muted
-                  playsInline
-                  poster={deity.image}
-                  preload="metadata"
-                  src={deity.video}
-                />
-              ) : (
-                <img className="deity-card-media" src={deity.image} alt={deity.label} decoding="async" />
-              )}
+              <img className="deity-card-media" src={deity.image} alt={deity.label} decoding="async" />
               <span>{deity.label}</span>
             </button>
           )
@@ -555,13 +757,27 @@ function DeityScreen({ activeIndex, onMove, onSelect, onContinue, playVideo }: {
       <div className="screen-copy deity-copy">
         <h1>วันนี้ขอโชคจากองค์ใด</h1>
         <p className="selected-deity">{deityConfig[activeIndex].label}</p>
-        <button className="primary-button" onClick={onContinue} type="button">เริ่มพิธี</button>
+        <button className="primary-button" onClick={onContinue} type="button">เริ่มการเสี่ยงดวง</button>
       </div>
     </div>
   )
 }
 
-function IncenseScreen({ burning, digits, progress, onStart }: { burning: boolean; digits: string[]; progress: number; onStart: () => void }) {
+function IncenseScreen({ burning, digits, fadedDigitIndex, phase, progress, starting, onStart }: {
+  burning: boolean
+  digits: string[]
+  fadedDigitIndex?: number
+  phase: 'initial' | 'paid-three' | 'paid-two'
+  progress: number
+  starting: boolean
+  onStart: () => void
+}) {
+  const revealLabel = phase === 'paid-three'
+    ? 'กำลังเปิดเลข 3 ตัวให้ครบ...'
+    : phase === 'paid-two'
+      ? 'กำลังประทานเลข 2 ตัวอีกชุด...'
+      : 'กำลังเปิดเผยเลขมงคล...'
+
   return (
     <div className="incense-layout">
       <div className={`incense-focus ${burning ? 'is-burning' : ''}`} aria-label="ธูปเสี่ยงโชค">
@@ -569,14 +785,16 @@ function IncenseScreen({ burning, digits, progress, onStart }: { burning: boolea
         <div className="incense-smoke incense-smoke-one" aria-hidden="true" />
         <div className="incense-smoke incense-smoke-two" aria-hidden="true" />
         <div className="incense-digit-stack" aria-label="เลขบนธูปเรียงแนวตั้ง">
-          {digits.map((digit, index) => <span className={digit === '?' ? 'is-pending' : 'is-revealed'} key={`${digit}-${index}`}>{digit}</span>)}
+          {digits.map((digit, index) => (
+            <span className={`${digit === '?' ? 'is-pending' : 'is-revealed'}${fadedDigitIndex === index ? ' is-faded' : ''}`} key={`${digit}-${index}`}>{digit}</span>
+          ))}
         </div>
       </div>
       <div className="screen-copy incense-copy">
         <p className="eyebrow">{burning ? 'กำลังอธิษฐาน...' : 'อธิษฐานเงียบ ๆ'}</p>
-        <h1>{burning ? 'กำลังเปิดเผยเลขมงคล...' : 'จุดธูปขอโชค'}</h1>
-        <button className="primary-button" disabled={burning} onClick={onStart} type="button">
-          {burning ? `${Math.max(1, Math.ceil((1 - progress) * 10))} วินาที` : 'จุดธูป'}
+        <h1>{burning ? revealLabel : 'จุดธูปขอโชค'}</h1>
+        <button className="primary-button" disabled={burning || starting} onClick={onStart} type="button">
+          {starting ? 'กำลังเตรียมรอบ...' : burning ? phase === 'initial' ? `${Math.max(1, Math.ceil((1 - progress) * 3))} วินาที` : 'กำลังประทานเลข...' : 'จุดธูปเสี่ยงดวง'}
         </button>
       </div>
     </div>
@@ -594,22 +812,103 @@ function WishPlaceholder({ onReset }: { onReset: () => void }) {
   )
 }
 
-function ResultScreen({ result, saved, saving, onSave, onLine, onReset }: { result: LuckyResult; saved: boolean; saving: boolean; onSave: () => void; onLine: () => void; onReset: () => void }) {
+function ResultScreen({ result, saved, saving, showLineAction, onSave, onLine, onReset }: {
+  result: LuckyResult
+  saved: boolean
+  saving: boolean
+  showLineAction: boolean
+  onSave: () => void
+  onLine: () => void
+  onReset: () => void
+}) {
   return (
     <div className="result-layout">
-      <div className="result-plaque" aria-label={`เลขมงคล ${result.digits.join(' ')}`}>
-        {result.digits.map((digit, index) => <span key={`${digit}-${index}`}>{digit}</span>)}
+      <div className={`result-plaque${result.bonusDigits ? ' has-bonus' : ' is-free-result'}`} aria-label={`เลขมงคล ${result.digits.join(' ')}${result.bonusDigits ? ` และ ${result.bonusDigits.join(' ')}` : ''}`}>
+        <div className="result-number-group">
+          <small>{result.bonusDigits ? 'เลข 3 ตัว' : 'เลข 2 ตัว'}</small>
+          <div className="result-number-row result-number-row-primary">
+            {result.digits.map((digit, index) => <span key={`${digit}-${index}`}>{digit}</span>)}
+          </div>
+        </div>
+        {result.bonusDigits && (
+          <div className="result-number-group">
+            <small>เลข 2 ตัว</small>
+            <div className="result-number-row result-number-row-bonus">
+              {result.bonusDigits.map((digit, index) => <span key={`${digit}-${index}`}>{digit}</span>)}
+            </div>
+          </div>
+        )}
       </div>
       <div className="screen-copy result-copy">
         <p className="eyebrow">พรประจำวัน</p>
         <h1>เลขมงคลของคุณ</h1>
         <p className="blessing-line">โชคเปิดทาง</p>
-        <button className="primary-button" disabled={saving} onClick={onSave} type="button">{saving ? 'กำลังบันทึก...' : saved ? 'บันทึกแล้ว' : 'บันทึกพร'}</button>
-        <div className="result-actions">
-          <button className="text-button" onClick={onLine} type="button">รับผลผ่าน LINE</button>
+        {result.bonusDigits && <button className="primary-button" disabled={saving} onClick={onSave} type="button">{saving ? 'กำลังสร้างการ์ด...' : saved ? 'บันทึกการ์ดแล้ว' : 'บันทึกการ์ดเลขมงคล'}</button>}
+        <div className={`result-actions${showLineAction ? '' : ' is-single'}`}>
+          {showLineAction && <button className="text-button" onClick={onLine} type="button">รับผลผ่าน LINE</button>}
           <button className="text-button" onClick={onReset} type="button">เริ่มใหม่</button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function DonationModal({ choice, draw, error, paymentState, onChooseDonation, onChooseFree, onConfirmFree }: {
+  choice: 'donate' | 'free' | null
+  draw: LuckyDraw
+  error: string
+  paymentState: 'idle' | 'loading' | 'waiting' | 'error'
+  onChooseDonation: () => void
+  onChooseFree: () => void
+  onConfirmFree: () => void
+}) {
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const hasActiveQr = Boolean(draw.qrImageBase64 && draw.qrExpiresAt && new Date(draw.qrExpiresAt).getTime() > Date.now())
+
+  useEffect(() => {
+    titleRef.current?.focus()
+  }, [])
+
+  return (
+    <div className="modal-backdrop donation-backdrop" role="presentation">
+      <section className="donation-modal" role="dialog" aria-modal="true" aria-labelledby="donation-title">
+        <p className="eyebrow">เปิดเลขเสี่ยงดวงที่เหลือ</p>
+        <h2 id="donation-title" ref={titleRef} tabIndex={-1}>รับเลขมงคลครบ 2 ชุด</h2>
+        <p className="donation-copy">หากต้องการเห็นเลขที่เหลือ สนับสนุน {draw.amount.toLocaleString('th-TH')} บาท เพื่อช่วยดูแล ปรับปรุงระบบ และดูแลส่วนเทวาลัย คุณจะได้รับเลข 3 ตัวและเลข 2 ตัวอีกหนึ่งชุด หากไม่สนับสนุนจะได้รับเลขเพียง 2 หลัก</p>
+
+        <fieldset className="donation-options">
+          <legend>เลือกวิธีรับเลข</legend>
+          <label className={`donation-option donation-option-paid${choice === 'donate' ? ' is-selected' : ''}`}>
+            <input checked={choice === 'donate'} disabled={paymentState === 'loading'} name="donation-choice" onChange={onChooseDonation} type="radio" value="donate" />
+            <span><strong>สนับสนุนเพื่อรับเลขที่เหลือ</strong><small>ชำระผ่าน QR PromptPay {draw.amount.toLocaleString('th-TH')} บาท</small></span>
+          </label>
+          <label className={`donation-option donation-option-free${choice === 'free' ? ' is-selected' : ''}`}>
+            <input checked={choice === 'free'} disabled={paymentState === 'loading'} name="donation-choice" onChange={onChooseFree} type="radio" value="free" />
+            <span><strong>ไม่สนับสนุน รับเลขสองหลัก</strong><small>เปิดเลขจางให้ชัดและจบพิธี</small></span>
+          </label>
+        </fieldset>
+
+        {choice === 'donate' && (
+          <div className="beam-payment" aria-live="polite">
+            {draw.qrImageBase64 && hasActiveQr && <>
+              <div className="beam-assurance">
+                <strong>ชำระผ่านศรีคเนศ × <span>Beam</span></strong>
+                <small>ปลอดภัย ตรวจรับยอดอัตโนมัติ<br />สแกน QR ไม่ต้องแนบสลิป · ยอดเข้าแล้วแจ้งทันที</small>
+              </div>
+              <img alt={`QR PromptPay จำนวน ${draw.amount} บาท`} className="beam-qr" src={`data:image/png;base64,${draw.qrImageBase64}`} />
+              <strong className="beam-amount">ยอดชำระ {draw.amount.toLocaleString('th-TH')} บาท</strong>
+              <p className="beam-save-guide">คุณสามารถแคปภาพหน้าจอ หรือกดค้างที่ QR เพื่อบันทึก และสแกนในแอปธนาคารเพื่อชำระเงินต่อไป<br />สแกนแล้วรอสักครู่ ระบบจะอัปเดตให้อัตโนมัติ</p>
+            </>}
+            {paymentState === 'loading' && <><div className="modal-loader" aria-hidden="true" /><p>กำลังสร้าง QR ที่ปลอดภัย...</p></>}
+            {paymentState === 'waiting' && hasActiveQr && <p className="payment-waiting"><span aria-hidden="true" />รอรับผลการชำระเงิน ระบบจะเปิดเลขให้อัตโนมัติ</p>}
+            {paymentState === 'error' && <p className="payment-error" role="alert">{error}</p>}
+            {(!hasActiveQr && paymentState !== 'loading') && <button className="primary-button" onClick={onChooseDonation} type="button">{paymentState === 'error' ? 'ลองสร้าง QR อีกครั้ง' : 'สร้าง QR PromptPay'}</button>}
+          </div>
+        )}
+
+        {choice === 'free' && <button className="primary-button free-result-button" disabled={paymentState === 'loading'} onClick={onConfirmFree} type="button">{paymentState === 'loading' ? 'กำลังเปิดเลข...' : 'ยืนยันรับเลข 2 หลัก'}</button>}
+        {error && choice !== 'donate' && <p className="payment-error" role="alert">{error}</p>}
+      </section>
     </div>
   )
 }
@@ -619,7 +918,7 @@ function LineModal({ status, mode, onClose, onRetry }: { status: 'pending' | 'su
   const content = status === 'pending'
     ? { title: 'กำลังเชื่อมต่อ LINE', body: 'กำลังเตรียมส่งคำอวยพรของคุณ...' }
     : status === 'success'
-      ? { title: 'ส่งคำอวยพรแล้ว', body: 'ผลของคุณถูกส่งกลับไปที่ LINE แล้ว' }
+      ? { title: 'ส่งผลเข้า LINE แล้ว', body: 'เลขมงคลและการ์ดของคุณถูกส่งกลับไปที่ LINE แล้ว' }
       : { title: 'ยังเชื่อมต่อ LINE ไม่สำเร็จ', body: mode === 'guest' ? 'คุณกำลังใช้งานแบบ Guest ผลยังอยู่บนหน้านี้' : 'ลองเชื่อมต่ออีกครั้งได้เลย' }
 
   useEffect(() => {

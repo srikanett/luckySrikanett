@@ -7,10 +7,10 @@ function createId() {
 
 export function getSessionId() {
   try {
-    const current = window.sessionStorage.getItem(SESSION_KEY)
+    const current = window.localStorage.getItem(SESSION_KEY)
     if (current) return current
     const next = createId()
-    window.sessionStorage.setItem(SESSION_KEY, next)
+    window.localStorage.setItem(SESSION_KEY, next)
     return next
   } catch {
     return createId()
