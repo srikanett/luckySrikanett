@@ -827,14 +827,14 @@ function ResultScreen({ result, saved, saving, showLineAction, onSave, onLine, o
         <div className="result-number-group">
           <small>{result.bonusDigits ? 'เลข 3 ตัว' : 'เลข 2 ตัว'}</small>
           <div className="result-number-row result-number-row-primary">
-            {result.digits.map((digit, index) => <span key={`${digit}-${index}`}>{digit}</span>)}
+            {result.digits.map((digit, index) => <div className="result-digit-wave" key={`${digit}-${index}`}><span>{digit}</span></div>)}
           </div>
         </div>
         {result.bonusDigits && (
           <div className="result-number-group">
             <small>เลข 2 ตัว</small>
             <div className="result-number-row result-number-row-bonus">
-              {result.bonusDigits.map((digit, index) => <span key={`${digit}-${index}`}>{digit}</span>)}
+              {result.bonusDigits.map((digit, index) => <div className="result-digit-wave" key={`${digit}-${index}`}><span>{digit}</span></div>)}
             </div>
           </div>
         )}
