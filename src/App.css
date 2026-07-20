@@ -31,6 +31,13 @@
   transform: scale(1.012);
 }
 
+.scene-image.is-synchronized {
+  opacity: 0;
+  transition: opacity 460ms var(--ease-standard);
+}
+
+.scene-image.is-synchronized.is-ready { opacity: 1; }
+
 .scene-video {
   z-index: -4;
   pointer-events: none;
@@ -65,7 +72,6 @@
 .is-power-saving .particle,
 .is-power-saving .incense-digit-stack,
 .is-power-saving .incense-digit-stack span,
-.is-power-saving .result-digit-wave,
 .is-power-saving .result-plaque span,
 .is-power-saving .result-plaque span::after { animation: none; }
 
@@ -367,6 +373,42 @@
   min-height: calc(100svh - 112px);
 }
 
+.incense-layout.is-scene-pending {
+  visibility: hidden;
+  opacity: 0;
+}
+
+.incense-layout.is-scene-ready {
+  animation: ritual-scene-in 460ms var(--ease-emphasized) both;
+}
+
+.ritual-scene-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  color: rgba(255, 241, 210, 0.9);
+  font-size: 0.9rem;
+  font-weight: 700;
+  pointer-events: none;
+  text-shadow: var(--content-shadow);
+  background: radial-gradient(circle at 50% 42%, rgba(125, 83, 27, 0.18), transparent 38%), var(--ink);
+  animation: ritual-loader-in 180ms ease-out both;
+}
+
+.ritual-loader-mark {
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(249, 217, 137, 0.26);
+  border-top-color: var(--gold-light);
+  border-radius: 50%;
+  box-shadow: 0 0 18px rgba(216, 168, 77, 0.16);
+  animation: ritual-loader-spin 1.15s linear infinite;
+}
+
 .incense-focus {
   position: absolute;
   top: 12%;
@@ -493,14 +535,14 @@
 .result-number-row { display: flex; justify-content: center; gap: 8px; }
 
 .result-digit-wave {
-  animation: result-gentle-wave 2.8s ease-in-out infinite;
-  will-change: transform;
+  animation: result-gentle-wave 3s ease-in-out infinite;
+  will-change: transform, filter;
 }
 
 .result-digit-wave:nth-child(2) { animation-delay: 180ms; }
 .result-digit-wave:nth-child(3) { animation-delay: 360ms; }
-.result-number-row-bonus .result-digit-wave:first-child { animation-delay: 90ms; }
-.result-number-row-bonus .result-digit-wave:nth-child(2) { animation-delay: 270ms; }
+.result-number-row-bonus .result-digit-wave:first-child { animation-delay: 540ms; }
+.result-number-row-bonus .result-digit-wave:nth-child(2) { animation-delay: 720ms; }
 
 .result-digit-wave > span {
   position: relative;
@@ -707,6 +749,9 @@
 }
 
 @keyframes screen-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes ritual-scene-in { from { opacity: 0; transform: translateY(8px) scale(0.992); } to { opacity: 1; transform: none; } }
+@keyframes ritual-loader-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ritual-loader-spin { to { transform: rotate(360deg); } }
 @keyframes slow-spin { to { transform: rotate(360deg); } }
 @keyframes flame-flicker { 50% { transform: translateX(-50%) rotate(45deg) scale(1.06, 0.96); } }
 @keyframes smoke-lift { 50% { opacity: 0.3; transform: translateY(-28px) rotate(10deg) scaleX(1.06); } }
@@ -714,7 +759,12 @@
 @keyframes digit-reveal { from { opacity: 0; transform: translateY(8px) scale(0.76); } to { opacity: 1; transform: none; } }
 @keyframes number-reveal-wave { 0% { opacity: 0; transform: translateY(14px) scale(0.8); } 38% { opacity: 1; transform: translateY(-5px) scale(1.03); } 100% { opacity: 1; transform: none; } }
 @keyframes number-reveal-bounce { 0% { opacity: 0; transform: translateY(-10px) scale(0.85); } 55% { opacity: 1; transform: translateY(4px) scale(1.04); } 78% { transform: translateY(-2px) scale(0.99); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
-@keyframes result-gentle-wave { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-5px) scale(1.015); } }
+@keyframes result-gentle-wave {
+  0%, 40%, 100% { filter: brightness(1); transform: translateY(0) scale(1); }
+  13% { filter: brightness(1.08) drop-shadow(0 0 7px rgba(249, 217, 137, 0.22)); transform: translateY(-6px) scale(1.018); }
+  26% { filter: brightness(1.03); transform: translateY(2px) scale(0.996); }
+  34% { filter: brightness(1); transform: translateY(0) scale(1); }
+}
 @keyframes result-shimmer { from { opacity: 0; transform: translateX(-80%) rotate(10deg); } 25% { opacity: 1; } to { opacity: 0; transform: translateX(80%) rotate(10deg); } }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
 @keyframes donation-text-shimmer { 0%, 18% { background-position: 100% 50%; } 58%, 100% { background-position: 0 50%; } }

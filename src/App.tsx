@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, SyntheticEvent } from 'react'
 import './App.css'
 import { assetConfig, deityConfig } from './config/assetConfig'
 import { brandConfig, campaignConfig } from './config/brandConfig'
@@ -122,6 +122,7 @@ function App() {
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [toast, setToast] = useState('')
   const [shouldLoadWelcomeVideo, setShouldLoadWelcomeVideo] = useState(false)
+  const [readySceneAsset, setReadySceneAsset] = useState<string | null>(null)
   const mountedRef = useRef(true)
   const liffStartedRef = useRef(false)
   const paidRevealStartedRef = useRef(false)
@@ -213,6 +214,14 @@ function App() {
   }, [isPageVisible, isPowerSaving, screen])
 
   useEffect(() => {
+    if (screen !== 'deity') return
+    const incenseImage = new Image()
+    incenseImage.decoding = 'async'
+    incenseImage.src = assetConfig.luckyIncense
+    void incenseImage.decode().catch(() => undefined)
+  }, [screen])
+
+  useEffect(() => {
     if (!toast) return
     const timeoutId = window.setTimeout(() => setToast(''), 3200)
     return () => window.clearTimeout(timeoutId)
@@ -300,10 +309,12 @@ function App() {
     }
   }, [isPageVisible, pollingDrawId, pollingDrawStatus, pollingDrawToken, runPaidReveal, showDonationModal])
 
+  const isRitual = screen === 'incense-idle' || screen === 'incense-burning'
   const currentAsset = screen === 'welcome' ? assetConfig.welcome :
     screen === 'activity' || screen === 'wish-placeholder' || screen === 'deity'
       ? assetConfig.templeTransition
       : assetConfig.luckyIncense
+  const isCurrentSceneImageReady = readySceneAsset === currentAsset
 
   const incenseDigits = ritualPhase === 'paid-three'
     ? draw?.threeDigitResult ?? ['?', '?', '?']
@@ -314,7 +325,7 @@ function App() {
         : ['?', '?', '?']
   const isVideoAllowed = isPageVisible && !isPowerSaving
   const showWelcomeVideo = screen === 'welcome' && shouldLoadWelcomeVideo && isVideoAllowed
-  const showIncenseVideo = screen === 'incense-burning' && isVideoAllowed && !showDonationModal
+  const showIncenseVideo = screen === 'incense-burning' && isVideoAllowed && isCurrentSceneImageReady && !showDonationModal
   const activeParticles = particles.slice(0, isPowerSaving ? 3 : 6)
 
   function selectActivity(nextActivity: ActivityKind) {
@@ -488,12 +499,17 @@ function App() {
     if (screen === 'wish-placeholder') setScreen('deity')
   }
 
-  const isRitual = screen === 'incense-idle' || screen === 'incense-burning'
-
   return (
     <main className={`app-shell scene-${screen} mode-${lineSession.mode} ${isPowerSaving ? 'is-power-saving' : ''} ${isPageVisible ? '' : 'is-page-hidden'}`}>
       <div className="scene-stage">
-        <ImageLayer src={currentAsset} alt="บรรยากาศศรีคเนศ เทวาลัย" />
+        <ImageLayer
+          alt="บรรยากาศศรีคเนศ เทวาลัย"
+          isReady={isCurrentSceneImageReady}
+          key={currentAsset}
+          onReady={setReadySceneAsset}
+          src={currentAsset}
+          synchronizeEntrance={isRitual}
+        />
         {showWelcomeVideo && <VideoLayer src={assetConfig.welcomeVideo} poster={assetConfig.welcome} loop />}
         {showIncenseVideo && <VideoLayer key={`incense-${videoVersion}`} src={assetConfig.luckyIncenseBurningVideo} poster={assetConfig.luckyIncense} />}
         <div className="scene-vignette" />
@@ -550,6 +566,7 @@ function App() {
               burning={screen === 'incense-burning'}
               digits={incenseDigits}
               fadedDigitIndex={ritualPhase === 'initial' && burningProgress >= 0.7 ? 1 : undefined}
+              isSceneReady={isCurrentSceneImageReady}
               phase={ritualPhase}
               progress={burningProgress}
               starting={isStartingRitual}
@@ -570,7 +587,9 @@ function App() {
           )}
         </section>
 
-        {isRitual && screen === 'incense-burning' && (
+        {isRitual && !isCurrentSceneImageReady && <RitualSceneLoader />}
+
+        {isRitual && isCurrentSceneImageReady && screen === 'incense-burning' && (
           <div className="ritual-progress" aria-label={`ความคืบหน้าการจุดธูป ${Math.round(burningProgress * 100)} เปอร์เซ็นต์`}>
             <span style={{ transform: `scaleX(${burningProgress})` }} />
           </div>
@@ -606,8 +625,41 @@ function toLuckyResult(draw: LuckyDraw, paid: boolean): LuckyResult {
   }
 }
 
-function ImageLayer({ src, alt }: { src: string; alt: string }) {
-  return <img className="scene-image" src={src} alt={alt} decoding="async" fetchPriority="high" onError={(event) => { event.currentTarget.style.opacity = '0' }} />
+function ImageLayer({ src, alt, isReady, synchronizeEntrance, onReady }: {
+  src: string
+  alt: string
+  isReady: boolean
+  synchronizeEntrance: boolean
+  onReady: (src: string) => void
+}) {
+  const handleLoad = (event: SyntheticEvent<HTMLImageElement>) => {
+    const image = event.currentTarget
+    void image.decode().catch(() => undefined).then(() => onReady(src))
+  }
+
+  return (
+    <img
+      className={`scene-image${synchronizeEntrance ? ' is-synchronized' : ''}${isReady ? ' is-ready' : ''}`}
+      src={src}
+      alt={alt}
+      decoding="async"
+      fetchPriority="high"
+      onLoad={handleLoad}
+      onError={(event) => {
+        event.currentTarget.style.opacity = '0'
+        onReady(src)
+      }}
+    />
+  )
+}
+
+function RitualSceneLoader() {
+  return (
+    <div className="ritual-scene-loader" role="status" aria-live="polite">
+      <span className="ritual-loader-mark" aria-hidden="true" />
+      <span>กำลังเตรียมภาพพิธี...</span>
+    </div>
+  )
 }
 
 function VideoLayer({ src, poster, loop = false }: { src: string; poster: string; loop?: boolean }) {
@@ -763,10 +815,11 @@ function DeityScreen({ activeIndex, onMove, onSelect, onContinue }: { activeInde
   )
 }
 
-function IncenseScreen({ burning, digits, fadedDigitIndex, phase, progress, starting, onStart }: {
+function IncenseScreen({ burning, digits, fadedDigitIndex, isSceneReady, phase, progress, starting, onStart }: {
   burning: boolean
   digits: string[]
   fadedDigitIndex?: number
+  isSceneReady: boolean
   phase: 'initial' | 'paid-three' | 'paid-two'
   progress: number
   starting: boolean
@@ -779,7 +832,7 @@ function IncenseScreen({ burning, digits, fadedDigitIndex, phase, progress, star
       : 'กำลังเปิดเผยเลขมงคล...'
 
   return (
-    <div className="incense-layout">
+    <div className={`incense-layout ${isSceneReady ? 'is-scene-ready' : 'is-scene-pending'}`} aria-busy={!isSceneReady}>
       <div className={`incense-focus ${burning ? 'is-burning' : ''}`} aria-label="ธูปเสี่ยงโชค">
         <div className="incense-flame" aria-hidden="true" />
         <div className="incense-smoke incense-smoke-one" aria-hidden="true" />
